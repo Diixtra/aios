@@ -1,0 +1,39 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/james/aios-search
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: true
+  className: traefik
+  host: aios-search.forge.diixtra.com
+  tls: true
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: default-rate-limit@kubernetescrd
+
+resources:
+  requests:
+    memory: 512Mi
+    cpu: 500m
+  limits:
+    memory: 768Mi
+    cpu: "1"
+
+vault:
+  path: /data/vault
+  hostPath: ""
+
+env:
+  QDRANT_URL: ""
+  COLLECTION_NAME: aios_vault
+  EMBEDDING_MODEL: all-MiniLM-L6-v2
+
+secrets:
+  qdrantApiKey: ""
+  aiosApiKey: ""
