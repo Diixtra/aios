@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import httpx
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 
 from src.config import VoiceConfig
 from src.localai import LocalAIClient
 from src.session import SessionManager
+from src.slack_integration import SlackVoiceIntegration
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AIOS Voice Gateway")
 config = VoiceConfig.from_env()
@@ -34,14 +39,69 @@ async def index() -> FileResponse:
     )
 
 
+async def _get_claude_response(
+    task_name: str, transcript: list[dict[str, str]]
+) -> str:
+    """Call the Anthropic API with the session transcript and return the response.
+
+    Args:
+        task_name: The AIOS task name for context.
+        transcript: List of message dicts with 'role' and 'content' keys.
+
+    Returns:
+        The text content of Claude's response.
+    """
+    messages = [
+        {
+            "role": m["role"] if m["role"] == "user" else "assistant",
+            "content": m["content"],
+        }
+        for m in transcript
+    ]
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": config.anthropic_api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 1024,
+                "system": (
+                    f"You are an AIOS agent assistant discussing task: {task_name}. "
+                    "The user is talking to you via voice. Keep responses concise "
+                    "and conversational."
+                ),
+                "messages": messages,
+            },
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data["content"][0]["text"]
+
+
 @app.websocket("/ws/{task_name}")
-async def voice_ws(websocket: WebSocket, task_name: str) -> None:
+async def voice_ws(
+    websocket: WebSocket,
+    task_name: str,
+    channel: str = Query(default=""),
+    thread: str = Query(default=""),
+) -> None:
     """WebSocket endpoint for push-to-talk voice interaction.
 
     Protocol:
     - Client sends binary audio frames.
     - Server responds with a JSON text message (transcript) followed
       by a binary audio message (TTS synthesis).
+
+    Query Parameters:
+        task: The AIOS task name (path param).
+        channel: Slack channel ID for transcript posting.
+        thread: Slack thread timestamp for transcript posting.
     """
     await websocket.accept()
 
@@ -57,9 +117,14 @@ async def voice_ws(websocket: WebSocket, task_name: str) -> None:
             user_text = await localai.transcribe(audio_bytes)
             session.add_user_message(user_text)
 
-            # Step 2: Generate agent response (placeholder - will be
-            # replaced with Claude API call)
-            agent_text = f"I heard you say: {user_text}"
+            # Step 2: Generate agent response via Claude API
+            transcript_for_claude = [
+                {"role": e.role, "content": e.text}
+                for e in session.transcript
+            ]
+            agent_text = await _get_claude_response(
+                task_name, transcript_for_claude
+            )
             session.add_agent_message(agent_text)
 
             # Step 3: Send text transcript to client
@@ -78,4 +143,19 @@ async def voice_ws(websocket: WebSocket, task_name: str) -> None:
             await websocket.send_bytes(audio_response)
 
     except WebSocketDisconnect:
+        # Post transcript to Slack if we have a non-empty transcript
+        # and Slack connection details.
+        transcript_text = session.get_transcript_text()
+        if transcript_text and channel and thread and config.slack_token:
+            try:
+                slack = SlackVoiceIntegration(config.slack_token)
+                await slack.post_transcript(channel, thread, transcript_text)
+            except Exception:
+                logger.exception(
+                    "Failed to post voice transcript to Slack "
+                    "channel=%s thread=%s",
+                    channel,
+                    thread,
+                )
+
         sessions.close(task_name)
