@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aios
+  labels:
+    app.kubernetes.io/part-of: aios
+    app.kubernetes.io/managed-by: flux

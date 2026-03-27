@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aios-voice
+  namespace: aios
+  labels:
+    app.kubernetes.io/name: aios-voice
+    app.kubernetes.io/part-of: aios
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aios-voice
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aios-voice
+        app.kubernetes.io/part-of: aios
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: voice
+          image: ghcr.io/diixtra/aios-voice:latest
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: LOCAL_AI_URL
+              value: "http://local-ai.local-ai.svc:8080"
+            - name: SLACK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aios-slack-app
+                  key: token
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aios-claude-api-key
+                  key: credential
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop:
+                - ALL

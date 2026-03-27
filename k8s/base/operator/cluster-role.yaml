@@ -1,0 +1,48 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aios-operator
+  labels:
+    app.kubernetes.io/name: aios-operator
+    app.kubernetes.io/part-of: aios
+rules:
+  - apiGroups:
+      - aios.kazie.co.uk
+    resources:
+      - agenttasks
+      - agenttasks/status
+      - agentconfigs
+      - toolpolicies
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - batch
+    resources:
+      - jobs
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+  - apiGroups:
+      - ""
+    resources:
+      - serviceaccounts
+      - configmaps
+      - events
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch

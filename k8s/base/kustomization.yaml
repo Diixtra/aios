@@ -1,0 +1,37 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  # Namespace and quotas
+  - namespace.yaml
+  - resource-quota.yaml
+
+  # Secrets (1Password items)
+  - secrets/claude-api-key.yaml
+  - secrets/github-app.yaml
+  - secrets/slack-app.yaml
+
+  # Operator
+  - operator/service-account.yaml
+  - operator/cluster-role.yaml
+  - operator/cluster-role-binding.yaml
+  - operator/deployment.yaml
+
+  # Webhook
+  - webhook/deployment.yaml
+  - webhook/service.yaml
+  - webhook/ingress-route.yaml
+
+  # Voice
+  - voice/deployment.yaml
+  - voice/service.yaml
+  - voice/ingress-route.yaml
+
+  # Policies and config
+  - policies/default-sre-toolpolicy.yaml
+  - policies/research-toolpolicy.yaml
+  - policies/default-agentconfig.yaml
+  - policies/network-policies.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: aios

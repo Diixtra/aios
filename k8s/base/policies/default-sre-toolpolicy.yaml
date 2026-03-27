@@ -1,0 +1,71 @@
+apiVersion: aios.kazie.co.uk/v1alpha1
+kind: ToolPolicy
+metadata:
+  name: default-sre
+  namespace: aios
+  labels:
+    app.kubernetes.io/part-of: aios
+spec:
+  allowed:
+    commands:
+      - git
+      - gh
+      - kubectl
+      - flux
+      - helm
+      - jq
+      - yq
+      - curl
+      - make
+      - go
+      - python
+      - pip
+      - npm
+      - node
+      - cargo
+      - rustc
+      - cat
+      - ls
+      - find
+      - grep
+      - sed
+      - awk
+      - head
+      - tail
+      - wc
+      - sort
+      - uniq
+      - diff
+      - patch
+      - tar
+      - gzip
+    network:
+      allowedHosts:
+        - api.github.com
+        - api.anthropic.com
+        - ghcr.io
+        - registry.npmjs.org
+        - pypi.org
+        - crates.io
+        - proxy.golang.org
+    fileAccess:
+      readable:
+        - /workspace
+        - /tmp
+      writable:
+        - /workspace
+        - /tmp
+  denied:
+    commands:
+      - rm -rf /
+      - dd
+      - mkfs
+      - fdisk
+      - mount
+      - umount
+      - shutdown
+      - reboot
+    fileAccess:
+      - /etc/shadow
+      - /etc/passwd
+      - /root

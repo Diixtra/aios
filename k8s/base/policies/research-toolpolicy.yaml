@@ -1,0 +1,49 @@
+apiVersion: aios.kazie.co.uk/v1alpha1
+kind: ToolPolicy
+metadata:
+  name: research
+  namespace: aios
+  labels:
+    app.kubernetes.io/part-of: aios
+spec:
+  allowed:
+    commands:
+      - git
+      - gh
+      - curl
+      - wget
+      - jq
+      - yq
+      - cat
+      - ls
+      - find
+      - grep
+      - head
+      - tail
+      - wc
+      - sort
+      - uniq
+      - diff
+      - python
+      - node
+    network:
+      allowedHosts:
+        - "*"
+    fileAccess:
+      readable:
+        - /workspace
+        - /tmp
+      writable:
+        - /tmp
+  denied:
+    commands:
+      - rm -rf /
+      - dd
+      - mkfs
+      - kubectl
+      - helm
+      - flux
+    fileAccess:
+      - /etc/shadow
+      - /etc/passwd
+      - /root

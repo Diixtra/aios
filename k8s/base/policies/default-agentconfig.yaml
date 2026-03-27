@@ -1,0 +1,31 @@
+apiVersion: aios.kazie.co.uk/v1alpha1
+kind: AgentConfig
+metadata:
+  name: claude-sonnet
+  namespace: aios
+  labels:
+    app.kubernetes.io/part-of: aios
+spec:
+  auth:
+    claudeKeySecret: aios-claude-api-key
+    githubAppSecret: aios-github-app
+  runtime:
+    image: ghcr.io/diixtra/aios-runtime:latest
+    model: claude-sonnet-4-6
+    maxTokens: 200000
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  slack:
+    channel: "#aios-tasks"
+    escalationChannel: "#aios-escalations"
+  voice:
+    enabled: true
+    localAiUrl: "http://local-ai.local-ai.svc:8080"
+  memory:
+    mcpServerUrl: "http://aios-memory.aios.svc:8080"
+    searchUrl: "http://aios-search.aios.svc:8080"
