@@ -17,7 +17,6 @@ def mock_settings(tmp_vault):
     settings.chunk_size_threshold = 1024
     settings.chunk_word_window = 200
     settings.chunk_word_overlap = 30
-    settings.embedding_batch_size = 32
     settings.debounce_ms = 500
     return settings
 

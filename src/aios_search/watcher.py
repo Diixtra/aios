@@ -59,9 +59,7 @@ class Watcher:
             )
             rel_path = str(path.relative_to(self._vault))
             self._indexer.delete_by_file_path(rel_path)
-            self._indexer.upsert_chunks(
-                chunks, batch_size=self._settings.embedding_batch_size
-            )
+            self._indexer.upsert_chunks(chunks)
             self._retry_set.discard(rel_path)
         except Exception:
             rel_path = str(path.relative_to(self._vault))
