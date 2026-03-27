@@ -7,6 +7,15 @@ rules:
 - apiGroups:
   - aios.kazie.co.uk
   resources:
+  - agentconfigs
+  - toolpolicies
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - aios.kazie.co.uk
+  resources:
   - agenttasks
   verbs:
   - create
@@ -30,3 +39,15 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
