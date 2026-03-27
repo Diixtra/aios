@@ -1,0 +1,15 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aios-webhook
+  namespace: aios
+  labels:
+    app.kubernetes.io/name: aios-webhook
+    app.kubernetes.io/part-of: aios
+rules:
+  - apiGroups:
+      - aios.kazie.co.uk
+    resources:
+      - agenttasks
+    verbs:
+      - create

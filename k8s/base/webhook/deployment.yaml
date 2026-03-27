@@ -17,7 +17,7 @@ spec:
         app.kubernetes.io/name: aios-webhook
         app.kubernetes.io/part-of: aios
     spec:
-      automountServiceAccountToken: false
+      serviceAccountName: aios-webhook
       containers:
         - name: webhook
           image: ghcr.io/diixtra/aios-webhook:latest
