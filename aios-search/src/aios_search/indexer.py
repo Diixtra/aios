@@ -8,6 +8,7 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     MatchValue,
+    PayloadSchemaType,
     PointStruct,
     VectorParams,
 )
@@ -47,6 +48,16 @@ class Indexer:
                 ),
             )
             logger.info("Created collection %s", self._collection)
+        # Ensure payload indexes exist for filtered queries
+        for field, schema in [
+            ("chunk_index", PayloadSchemaType.INTEGER),
+            ("file_path", PayloadSchemaType.KEYWORD),
+        ]:
+            self._client.create_payload_index(
+                collection_name=self._collection,
+                field_name=field,
+                field_schema=schema,
+            )
 
     def upsert_chunks(self, chunks: list[NoteChunk]):
         if not chunks:
