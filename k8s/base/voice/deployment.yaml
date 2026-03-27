@@ -37,7 +37,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: aios-claude-api-key
-                  key: credential
+                  key: api-key
           livenessProbe:
             httpGet:
               path: /healthz

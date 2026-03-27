@@ -125,7 +125,7 @@ describe("MemoryClient", () => {
       expect(mockFetch).toHaveBeenCalledWith("http://search:8080/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: "architecture patterns", top_k: 3 }),
+        body: JSON.stringify({ query: "architecture patterns", limit: 3 }),
       });
     });
 

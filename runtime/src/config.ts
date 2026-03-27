@@ -32,8 +32,8 @@ export function loadTaskConfig(): TaskConfig {
     branch: required("AIOS_BRANCH"),
     slackChannel: required("AIOS_SLACK_CHANNEL"),
     slackThreadTs: optional("AIOS_SLACK_THREAD_TS"),
-    memoryUrl: required("AIOS_MEMORY_URL"),
-    searchUrl: required("AIOS_SEARCH_URL"),
+    memoryUrl: optional("AIOS_MEMORY_URL") ?? "",
+    searchUrl: optional("AIOS_SEARCH_URL") ?? "",
     workspace: optional("AIOS_WORKSPACE") ?? "/workspace",
   };
 }

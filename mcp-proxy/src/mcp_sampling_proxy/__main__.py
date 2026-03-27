@@ -36,10 +36,12 @@ async def _run() -> None:
 
     # Graceful shutdown on signals
     loop = asyncio.get_running_loop()
+    proxy_task = asyncio.create_task(proxy.start())
 
     async def shutdown() -> None:
         if config.debug:
             print("[main] shutting down...", file=sys.stderr)
+        proxy_task.cancel()
         await upstream.disconnect()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -47,7 +49,10 @@ async def _run() -> None:
             sig, lambda: asyncio.ensure_future(shutdown())
         )
 
-    await proxy.start()
+    try:
+        await proxy_task
+    except asyncio.CancelledError:
+        pass
 
 
 def main() -> None:

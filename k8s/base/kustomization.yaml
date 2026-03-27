@@ -18,6 +18,9 @@ resources:
   - operator/deployment.yaml
 
   # Webhook
+  - webhook/serviceaccount.yaml
+  - webhook/role.yaml
+  - webhook/rolebinding.yaml
   - webhook/deployment.yaml
   - webhook/service.yaml
   - webhook/ingress-route.yaml

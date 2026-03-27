@@ -17,6 +17,7 @@ limitations under the License.
 package controller
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -129,8 +130,11 @@ func TestBuildJob_CodingJob(t *testing.T) {
 	require.Len(t, job.Spec.Template.Spec.InitContainers, 1)
 	initContainer := job.Spec.Template.Spec.InitContainers[0]
 	assert.Equal(t, "git-clone", initContainer.Name)
-	// I1: Verify git clone uses authenticated URL
-	assert.Contains(t, initContainer.Command[2], "x-access-token:${GITHUB_TOKEN}@github.com")
+	// I1: Verify git clone uses authenticated URL without shell
+	assert.Equal(t, "git", initContainer.Command[0])
+	assert.Equal(t, "clone", initContainer.Command[1])
+	assert.Contains(t, initContainer.Command[2], "x-access-token:$(GITHUB_TOKEN)@github.com")
+	assert.Equal(t, "/workspace", initContainer.Command[3])
 	// I1: Verify GITHUB_TOKEN is available in init container
 	require.Len(t, initContainer.Env, 1)
 	assert.Equal(t, "GITHUB_TOKEN", initContainer.Env[0].Name)
@@ -403,6 +407,68 @@ func TestBuildJob_ResearchEnvVars(t *testing.T) {
 
 	// C3: Research job should have AIOS_TASK_TYPE=research
 	assert.Equal(t, "research", envMap["AIOS_TASK_TYPE"])
+}
+
+func TestBuildJob_ToolPolicyConfigMap_FlatShape(t *testing.T) {
+	builder := &JobBuilder{Scheme: newTestScheme()}
+	task := newTestTask()
+	config := newTestConfig()
+	policy := &aiosv1alpha1.ToolPolicy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "default-policy",
+			Namespace: "default",
+		},
+		Spec: aiosv1alpha1.ToolPolicySpec{
+			Allowed: aiosv1alpha1.AllowedActions{
+				Commands: []string{"git", "npm"},
+				FileAccess: &aiosv1alpha1.FileAccessPolicy{
+					Writable: []string{"/workspace/**"},
+					Readable: []string{"/etc/aios/**"},
+				},
+				Network: &aiosv1alpha1.NetworkPolicy{
+					AllowedHosts: []string{"api.github.com"},
+				},
+			},
+			Denied: &aiosv1alpha1.DeniedActions{
+				Commands: []string{"rm -rf"},
+			},
+		},
+	}
+
+	result, err := builder.BuildJob(task, config, policy, "coding", "")
+	require.NoError(t, err)
+
+	// Parse the ConfigMap policy.json and verify flat shape
+	var parsed runtimeToolPolicy
+	err = json.Unmarshal([]byte(result.ConfigMap.Data["policy.json"]), &parsed)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"git", "npm"}, parsed.AllowedCommands)
+	assert.Equal(t, []string{"rm -rf"}, parsed.DeniedCommands)
+	assert.Equal(t, []string{"/workspace/**"}, parsed.WritablePaths)
+	assert.Equal(t, []string{"/etc/aios/**"}, parsed.ReadablePaths)
+	assert.Equal(t, []string{"api.github.com"}, parsed.AllowedHosts)
+}
+
+func TestBuildJob_NoMemoryConfig_OmitsMemoryEnvVars(t *testing.T) {
+	builder := &JobBuilder{Scheme: newTestScheme()}
+	task := newTestTask()
+	config := newTestConfig()
+	config.Spec.Memory = nil // No memory configured
+	policy := newTestPolicy()
+
+	result, err := builder.BuildJob(task, config, policy, "coding", "")
+	require.NoError(t, err)
+
+	job := result.Job
+	envNames := make(map[string]bool)
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		envNames[e.Name] = true
+	}
+
+	// When Memory is nil, AIOS_MEMORY_URL and AIOS_SEARCH_URL should not be set
+	assert.False(t, envNames["AIOS_MEMORY_URL"], "AIOS_MEMORY_URL should not be set when Memory is nil")
+	assert.False(t, envNames["AIOS_SEARCH_URL"], "AIOS_SEARCH_URL should not be set when Memory is nil")
 }
 
 func TestBuildJob_InvalidJobType(t *testing.T) {

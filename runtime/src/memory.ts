@@ -84,7 +84,7 @@ export class MemoryClient {
     const response = await this.fetchFn(`${this.searchUrl}/search`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, top_k: topK }),
+      body: JSON.stringify({ query, limit: topK }),
     });
 
     if (!response.ok) {

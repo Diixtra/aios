@@ -19,6 +19,7 @@ package controller
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -31,6 +32,15 @@ import (
 
 	aiosv1alpha1 "github.com/Diixtra/aios/operator/api/v1alpha1"
 )
+
+// runtimeToolPolicy is the flat JSON shape the runtime expects for tool policies.
+type runtimeToolPolicy struct {
+	AllowedCommands []string `json:"allowedCommands"`
+	DeniedCommands  []string `json:"deniedCommands,omitempty"`
+	WritablePaths   []string `json:"writablePaths,omitempty"`
+	ReadablePaths   []string `json:"readablePaths,omitempty"`
+	AllowedHosts    []string `json:"allowedHosts"`
+}
 
 // JobBuilder constructs Kubernetes Jobs from AgentTask CRs.
 type JobBuilder struct {
@@ -66,8 +76,22 @@ func (b *JobBuilder) BuildJob(
 ) (*BuildResult, error) {
 	jobName := fmt.Sprintf("%s-%s", task.Name, jobType)
 
-	// C2: Serialize ToolPolicy spec to JSON for ConfigMap
-	policyJSON, err := json.Marshal(policy.Spec)
+	// C2: Serialize ToolPolicy to flat JSON matching runtime's expected shape
+	flatPolicy := runtimeToolPolicy{
+		AllowedCommands: policy.Spec.Allowed.Commands,
+		AllowedHosts:    []string{},
+	}
+	if policy.Spec.Denied != nil {
+		flatPolicy.DeniedCommands = policy.Spec.Denied.Commands
+	}
+	if policy.Spec.Allowed.FileAccess != nil {
+		flatPolicy.WritablePaths = policy.Spec.Allowed.FileAccess.Writable
+		flatPolicy.ReadablePaths = policy.Spec.Allowed.FileAccess.Readable
+	}
+	if policy.Spec.Allowed.Network != nil {
+		flatPolicy.AllowedHosts = policy.Spec.Allowed.Network.AllowedHosts
+	}
+	policyJSON, err := json.Marshal(flatPolicy)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal tool policy: %w", err)
 	}
@@ -141,17 +165,12 @@ func (b *JobBuilder) BuildJob(
 		},
 	}
 
-	// C3: Inject AIOS_MEMORY_URL and AIOS_SEARCH_URL from AgentConfig Memory config
+	// C3: Only inject AIOS_MEMORY_URL and AIOS_SEARCH_URL when Memory is configured.
+	// The runtime treats these as optional — omitting them is safe for tasks that don't need memory.
 	if config.Spec.Memory != nil {
 		envVars = append(envVars,
 			corev1.EnvVar{Name: "AIOS_MEMORY_URL", Value: config.Spec.Memory.MCPServerUrl},
 			corev1.EnvVar{Name: "AIOS_SEARCH_URL", Value: config.Spec.Memory.SearchUrl},
-		)
-	} else {
-		// Still set them as empty to avoid runtime crash on required() check
-		envVars = append(envVars,
-			corev1.EnvVar{Name: "AIOS_MEMORY_URL", Value: ""},
-			corev1.EnvVar{Name: "AIOS_SEARCH_URL", Value: ""},
 		)
 	}
 
@@ -230,13 +249,13 @@ func (b *JobBuilder) BuildJob(
 		// C3: Set AIOS_WORKSPACE for coding jobs
 		envVars = append(envVars, corev1.EnvVar{Name: "AIOS_WORKSPACE", Value: "/workspace"})
 
-		// I1: Use authenticated git clone URL
+		// I1: Use authenticated git clone URL — no shell to prevent injection via Repo field
+		cloneURL := fmt.Sprintf("https://x-access-token:$(GITHUB_TOKEN)@github.com/%s.git",
+			strings.ReplaceAll(strings.ReplaceAll(task.Spec.Source.Repo, "'", ""), "\"", ""))
 		initContainers = append(initContainers, corev1.Container{
-			Name:  "git-clone",
-			Image: "alpine/git:latest",
-			Command: []string{"sh", "-c",
-				fmt.Sprintf("git clone https://x-access-token:${GITHUB_TOKEN}@github.com/%s.git /workspace", task.Spec.Source.Repo),
-			},
+			Name:    "git-clone",
+			Image:   "alpine/git:latest",
+			Command: []string{"git", "clone", cloneURL, "/workspace"},
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: "workspace", MountPath: "/workspace"},
 				{Name: "tmp", MountPath: "/tmp"},
