@@ -48,11 +48,11 @@ class Indexer:
             )
             logger.info("Created collection %s", self._collection)
 
-    def upsert_chunks(self, chunks: list[NoteChunk], batch_size: int = 32):
+    def upsert_chunks(self, chunks: list[NoteChunk]):
         if not chunks:
             return
         texts = [c.content for c in chunks]
-        vectors = self._embedder.embed(texts, batch_size=batch_size)
+        vectors = self._embedder.embed(texts)
         points = []
         now = datetime.now(timezone.utc).isoformat()
         for chunk, vector in zip(chunks, vectors):
