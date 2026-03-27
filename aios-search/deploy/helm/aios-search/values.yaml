@@ -1,0 +1,43 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/james/aios-search
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: true
+  className: traefik
+  host: aios-search.forge.diixtra.com
+  tls: true
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: default-rate-limit@kubernetescrd
+
+resources:
+  requests:
+    memory: 512Mi
+    cpu: 500m
+  limits:
+    memory: 768Mi
+    cpu: "1"
+
+vault:
+  path: /data/vault
+  hostPath: ""
+
+env:
+  COLLECTION_NAME: aios_vault
+  EMBEDDING_MODEL: all-MiniLM-L6-v2
+  EMBEDDING_URL: http://local-ai.local-ai.svc.cluster.local:8080
+
+# Secrets managed by 1Password Operator (OnePasswordItem CRDs).
+# Create these items in your 1Password vault:
+#   - "aios-search-qdrant" (API Credential): fields "url" + "credential"
+#   - "aios-search-api-key" (API Credential): field "credential"
+# Then add to cluster-vars ConfigMap:
+#   OP_ITEM_AIOS_SEARCH_QDRANT: "aios-search-qdrant"
+#   OP_ITEM_AIOS_SEARCH_API_KEY: "aios-search-api-key"

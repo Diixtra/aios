@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app: {{ .Release.Name }}
+  annotations:
+    reloader.stakater.com/auto: "true"
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}
+    spec:
+      containers:
+        - name: aios-search
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 8000
+          env:
+            - name: VAULT_PATH
+              value: {{ .Values.vault.path }}
+            - name: QDRANT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: aios-search-qdrant
+                  key: url
+            - name: QDRANT_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aios-search-qdrant
+                  key: credential
+            - name: AIOS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: aios-search-api-key
+                  key: credential
+            - name: COLLECTION_NAME
+              value: {{ .Values.env.COLLECTION_NAME }}
+            - name: EMBEDDING_MODEL
+              value: {{ .Values.env.EMBEDDING_MODEL }}
+            - name: EMBEDDING_URL
+              value: {{ .Values.env.EMBEDDING_URL }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: vault
+              mountPath: {{ .Values.vault.path }}
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+      volumes:
+        - name: vault
+          hostPath:
+            path: {{ .Values.vault.hostPath }}
+            type: Directory

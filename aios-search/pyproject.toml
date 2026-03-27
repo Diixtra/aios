@@ -1,0 +1,43 @@
+[project]
+name = "aios-search"
+version = "0.1.0"
+description = "Semantic search for AIOS Obsidian vault"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+    "qdrant-client>=1.13.0",
+    "watchfiles>=1.0.0",
+    "python-frontmatter>=1.1.0",
+    "pydantic-settings>=2.7.0",
+    "httpx>=0.28.0",
+    "numpy>=1.26.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.25.0",
+    "httpx>=0.28.0",
+    "pytest-cov>=6.0.0",
+]
+mcp = [
+    "mcp[cli]>=1.0.0",
+    "httpx>=0.28.0",
+    "pydantic-settings>=2.7.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aios_search"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+pythonpath = ["mcp"]
+
+[tool.coverage.run]
+omit = ["src/aios_search/main.py"]
