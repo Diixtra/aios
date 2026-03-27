@@ -44,6 +44,8 @@ spec:
               value: {{ .Values.env.COLLECTION_NAME }}
             - name: EMBEDDING_MODEL
               value: {{ .Values.env.EMBEDDING_MODEL }}
+            - name: EMBEDDING_URL
+              value: {{ .Values.env.EMBEDDING_URL }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:

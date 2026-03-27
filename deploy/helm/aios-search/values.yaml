@@ -32,6 +32,7 @@ vault:
 env:
   COLLECTION_NAME: aios_vault
   EMBEDDING_MODEL: all-MiniLM-L6-v2
+  EMBEDDING_URL: http://local-ai.local-ai.svc.cluster.local:8080
 
 # Secrets managed by 1Password Operator (OnePasswordItem CRDs).
 # Create these items in your 1Password vault:
