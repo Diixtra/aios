@@ -12,10 +12,11 @@ import (
 
 // TaskRequest contains the extracted data from a GitHub issue labeled event.
 type TaskRequest struct {
-	Repo        string `json:"repo"`
-	IssueNumber int    `json:"issueNumber"`
-	Title       string `json:"title"`
-	Body        string `json:"body"`
+	Repo        string   `json:"repo"`
+	IssueNumber int      `json:"issueNumber"`
+	Title       string   `json:"title"`
+	Body        string   `json:"body"`
+	Labels      []string `json:"labels"`
 }
 
 // CreateTaskFunc is a callback invoked when a valid agent-labeled issue event is received.
@@ -37,6 +38,11 @@ func NewHandler(secret []byte, createTaskFunc CreateTaskFunc) *Handler {
 	}
 }
 
+// issueLabel represents a single label from a GitHub issue.
+type issueLabel struct {
+	Name string `json:"name"`
+}
+
 // issueEvent represents the relevant fields of a GitHub issues webhook payload.
 type issueEvent struct {
 	Action string `json:"action"`
@@ -44,9 +50,10 @@ type issueEvent struct {
 		Name string `json:"name"`
 	} `json:"label"`
 	Issue struct {
-		Number int    `json:"number"`
-		Title  string `json:"title"`
-		Body   string `json:"body"`
+		Number int          `json:"number"`
+		Title  string       `json:"title"`
+		Body   string       `json:"body"`
+		Labels []issueLabel `json:"labels"`
 	} `json:"issue"`
 	Repository struct {
 		FullName string `json:"full_name"`
@@ -95,11 +102,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	labels := make([]string, 0, len(event.Issue.Labels))
+	for _, l := range event.Issue.Labels {
+		labels = append(labels, l.Name)
+	}
+
 	taskReq := TaskRequest{
 		Repo:        event.Repository.FullName,
 		IssueNumber: event.Issue.Number,
 		Title:       event.Issue.Title,
 		Body:        event.Issue.Body,
+		Labels:      labels,
 	}
 
 	if err := h.createTaskFunc(taskReq); err != nil {

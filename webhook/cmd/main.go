@@ -11,6 +11,7 @@ import (
 	"time"
 
 	gh "github.com/Diixtra/aios/webhook/internal/github"
+	k8sclient "github.com/Diixtra/aios/webhook/internal/k8s"
 )
 
 func main() {
@@ -24,9 +25,30 @@ func main() {
 		log.Fatal("GITHUB_WEBHOOK_SECRET environment variable is required")
 	}
 
-	// TODO: Wire up K8s client to create AgentTask CRs instead of this placeholder.
+	namespace := os.Getenv("AIOS_NAMESPACE")
+	if namespace == "" {
+		namespace = "aios"
+	}
+
+	// Create the K8s client for AgentTask CR creation.
+	kc, err := k8sclient.NewClient(namespace)
+	if err != nil {
+		log.Fatalf("failed to create K8s client: %v", err)
+	}
+
 	createTask := func(req gh.TaskRequest) error {
-		log.Printf("task requested: repo=%s issue=#%d title=%q", req.Repo, req.IssueNumber, req.Title)
+		params := k8sclient.TaskParams{
+			Repo:        req.Repo,
+			IssueNumber: req.IssueNumber,
+			Title:       req.Title,
+			Body:        req.Body,
+			Labels:      req.Labels,
+		}
+		if err := kc.CreateAgentTask(context.Background(), params); err != nil {
+			log.Printf("failed to create AgentTask: %v", err)
+			return err
+		}
+		log.Printf("created AgentTask: repo=%s issue=#%d", req.Repo, req.IssueNumber)
 		return nil
 	}
 
