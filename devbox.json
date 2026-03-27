@@ -1,0 +1,44 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/main/.schema/devbox.schema.json",
+  "packages": [
+    "go@1.23",
+    "nodejs@22",
+    "python@3.12",
+    "uv",
+    "kubectl",
+    "kubernetes-helm",
+    "kustomize",
+    "gh",
+    "docker",
+    "just"
+  ],
+  "shell": {
+    "init_hook": [
+      "echo '=== AIOS Platform Dev Environment ==='",
+      "echo ''",
+      "# Install kubebuilder if not present",
+      "KUBEBUILDER_VERSION=\"4.4.0\"",
+      "if ! command -v kubebuilder &> /dev/null; then",
+      "  echo 'Installing kubebuilder...'",
+      "  curl -sL \"https://github.com/kubernetes-sigs/kubebuilder/releases/download/v${KUBEBUILDER_VERSION}/kubebuilder_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/')\" -o \"$DEVBOX_PROJECT_ROOT/.devbox/bin/kubebuilder\"",
+      "  chmod +x \"$DEVBOX_PROJECT_ROOT/.devbox/bin/kubebuilder\"",
+      "fi",
+      "# Install controller-gen if not present",
+      "if ! command -v controller-gen &> /dev/null; then",
+      "  echo 'Installing controller-gen...'",
+      "  GOBIN=\"$DEVBOX_PROJECT_ROOT/.devbox/bin\" go install sigs.k8s.io/controller-tools/cmd/controller-gen@latest",
+      "fi",
+      "# Install fabric-ai if not present",
+      "if ! command -v fabric &> /dev/null; then",
+      "  echo 'Installing fabric-ai...'",
+      "  go install github.com/danielmiessler/fabric@latest && cp \"$(go env GOPATH)/bin/fabric\" \"$DEVBOX_PROJECT_ROOT/.devbox/bin/fabric\"",
+      "fi",
+      "echo 'Go:       '$(go version | awk '{print $3}')",
+      "echo 'Node:     '$(node --version)",
+      "echo 'Python:   '$(python --version 2>&1 | awk '{print $2}')",
+      "echo 'kubectl:  '$(kubectl version --client --short 2>/dev/null || echo 'available')",
+      "echo ''",
+      "just --list 2>/dev/null || echo 'Run: just --list (after Justfile is created)'"
+    ]
+  }
+}
