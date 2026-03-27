@@ -74,6 +74,7 @@ spec:
               type: RuntimeDefault
       volumes:
         - name: vault
-          hostPath:
-            path: {{ .Values.vault.hostPath }}
-            type: Directory
+          nfs:
+            server: {{ .Values.vault.nfs.server }}
+            path: {{ .Values.vault.nfs.path }}
+            readOnly: true
