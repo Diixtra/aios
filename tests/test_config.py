@@ -18,10 +18,23 @@ def test_config_loads_from_env(monkeypatch):
     assert s.aios_api_key == "secret"
     assert s.collection_name == "aios_vault"
     assert s.embedding_model == "all-MiniLM-L6-v2"
+    assert s.embedding_url == "http://local-ai.local-ai.svc.cluster.local:8080"
     assert s.min_score == 0.3
-    assert s.embedding_batch_size == 32
     assert s.qdrant_batch_size == 100
     assert s.debounce_ms == 500
+
+
+def test_config_custom_embedding_url(monkeypatch):
+    monkeypatch.setenv("VAULT_PATH", "/data/vault")
+    monkeypatch.setenv("QDRANT_URL", "https://qdrant.example.com")
+    monkeypatch.setenv("QDRANT_API_KEY", "test-key")
+    monkeypatch.setenv("AIOS_API_KEY", "secret")
+    monkeypatch.setenv("EMBEDDING_URL", "https://local-ai.lab.kazie.co.uk")
+
+    from aios_search.config import Settings
+
+    s = Settings()
+    assert s.embedding_url == "https://local-ai.lab.kazie.co.uk"
 
 
 def test_config_defaults(monkeypatch):

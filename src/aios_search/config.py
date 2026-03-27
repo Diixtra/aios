@@ -11,9 +11,9 @@ class Settings(BaseSettings):
     # Defaults
     collection_name: str = "aios_vault"
     embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_url: str = "http://local-ai.local-ai.svc.cluster.local:8080"
     vector_size: int = 384
     min_score: float = 0.3
-    embedding_batch_size: int = 32
     qdrant_batch_size: int = 100
     debounce_ms: int = 500
     host: str = "0.0.0.0"
