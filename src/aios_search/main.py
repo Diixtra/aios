@@ -21,7 +21,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     if settings is None:
         settings = Settings()
 
-    embedder = Embedder(model_name=settings.embedding_model)
+    embedder = Embedder(
+        base_url=settings.embedding_url,
+        model_name=settings.embedding_model,
+    )
     indexer = Indexer(
         qdrant_url=settings.qdrant_url,
         qdrant_api_key=settings.qdrant_api_key,
