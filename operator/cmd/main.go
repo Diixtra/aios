@@ -17,10 +17,12 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
 	"path/filepath"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -32,13 +34,16 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	aiosv1alpha1 "github.com/Diixtra/aios/operator/api/v1alpha1"
 	"github.com/Diixtra/aios/operator/internal/controller"
+	"github.com/Diixtra/aios/operator/internal/metrics"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -51,6 +56,36 @@ func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(aiosv1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
+}
+
+// cleanupRunnable implements manager.Runnable for periodic job cleanup.
+type cleanupRunnable struct {
+	client    controller.CleanupClient
+	namespace string
+	interval  time.Duration
+	retention time.Duration
+}
+
+// Start implements manager.Runnable. It runs a periodic cleanup loop until the context is cancelled.
+func (c *cleanupRunnable) Start(ctx context.Context) error {
+	logger := log.FromContext(ctx).WithName("cleanup")
+	ticker := time.NewTicker(c.interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Info("cleanup runner stopping")
+			return nil
+		case <-ticker.C:
+			cleaned, err := controller.CleanupCompletedJobs(ctx, c.client, c.namespace, c.retention)
+			if err != nil {
+				logger.Error(err, "cleanup failed")
+			} else if cleaned > 0 {
+				logger.Info("cleaned up jobs", "count", cleaned)
+			}
+		}
+	}
 }
 
 // nolint:gocyclo
@@ -153,11 +188,6 @@ func main() {
 	// If the certificate is not specified, controller-runtime will automatically
 	// generate self-signed certificates for the metrics server. While convenient for development and testing,
 	// this setup is not recommended for production.
-	//
-	// TODO(user): If you enable certManager, uncomment the following lines:
-	// - [METRICS-WITH-CERTS] at config/default/kustomization.yaml to generate and use certificates
-	// managed by cert-manager for the metrics server.
-	// - [PROMETHEUS-WITH-CERTS] at config/prometheus/kustomization.yaml for TLS certification.
 	if len(metricsCertPath) > 0 {
 		setupLog.Info("Initializing metrics certificate watcher using provided certificates",
 			"metrics-cert-path", metricsCertPath, "metrics-cert-name", metricsCertName, "metrics-cert-key", metricsCertKey)
@@ -201,9 +231,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	// I4: Create Metrics instance using the controller-runtime metrics server's registry
+	aiosMetrics := metrics.NewMetrics(ctrlmetrics.Registry)
+
 	if err = (&controller.AgentTaskReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:  mgr.GetClient(),
+		Scheme:  mgr.GetScheme(),
+		Metrics: aiosMetrics,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "AgentTask")
 		os.Exit(1)
@@ -224,6 +258,21 @@ func main() {
 			setupLog.Error(err, "unable to add webhook certificate watcher to manager")
 			os.Exit(1)
 		}
+	}
+
+	// I3: Add periodic cleanup runner
+	cleanupNS := os.Getenv("CLEANUP_NAMESPACE")
+	if cleanupNS == "" {
+		cleanupNS = "default"
+	}
+	if err := mgr.Add(&cleanupRunnable{
+		client:    mgr.GetClient(),
+		namespace: cleanupNS,
+		interval:  5 * time.Minute,
+		retention: 1 * time.Hour,
+	}); err != nil {
+		setupLog.Error(err, "unable to add cleanup runner to manager")
+		os.Exit(1)
 	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

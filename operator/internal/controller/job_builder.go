@@ -19,9 +19,11 @@ package controller
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
@@ -35,20 +37,60 @@ type JobBuilder struct {
 	Scheme *runtime.Scheme
 }
 
-// BuildJob creates a Kubernetes Job for the given AgentTask.
+// BuildResult contains all resources created by the job builder.
+type BuildResult struct {
+	Job           *batchv1.Job
+	ConfigMap     *corev1.ConfigMap
+	NetworkPolicy *NetworkPolicySpec
+	PVC           *corev1.PersistentVolumeClaim
+}
+
+// NetworkPolicySpec holds the data needed to create a K8s NetworkPolicy.
+// We use a separate struct because networking.k8s.io types need their own import.
+type NetworkPolicySpec struct {
+	Name         string
+	Namespace    string
+	Labels       map[string]string
+	AllowedHosts []string
+	AllowAll     bool
+}
+
+// BuildJob creates a Kubernetes Job and associated resources for the given AgentTask.
 // jobType must be "coding" or "research".
 func (b *JobBuilder) BuildJob(
 	task *aiosv1alpha1.AgentTask,
 	config *aiosv1alpha1.AgentConfig,
 	policy *aiosv1alpha1.ToolPolicy,
 	jobType string,
-) (*batchv1.Job, error) {
+	researchPVCName string,
+) (*BuildResult, error) {
 	jobName := fmt.Sprintf("%s-%s", task.Name, jobType)
 
-	// Serialize ToolPolicy spec to JSON for ConfigMap-style mounting
+	// C2: Serialize ToolPolicy spec to JSON for ConfigMap
 	policyJSON, err := json.Marshal(policy.Spec)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal tool policy: %w", err)
+	}
+
+	// C2: Create the ConfigMap for tool policy
+	configMapName := fmt.Sprintf("%s-%s-tool-policy", task.Name, jobType)
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      configMapName,
+			Namespace: task.Namespace,
+			Labels: map[string]string{
+				"aios.kazie.co.uk/task":     task.Name,
+				"aios.kazie.co.uk/job-type": jobType,
+				"app.kubernetes.io/part-of": "aios",
+			},
+		},
+		Data: map[string]string{
+			"policy.json": string(policyJSON),
+		},
+	}
+	// Set owner reference on ConfigMap so it gets garbage collected
+	if err := ctrl.SetControllerReference(task, configMap, b.Scheme); err != nil {
+		return nil, fmt.Errorf("failed to set owner reference on ConfigMap: %w", err)
 	}
 
 	labels := map[string]string{
@@ -57,15 +99,24 @@ func (b *JobBuilder) BuildJob(
 		"app.kubernetes.io/part-of": "aios",
 	}
 
-	// Build env vars
+	// C3: Build env vars matching runtime config.ts expectations:
+	// Required: AIOS_TASK_ID, AIOS_TASK_TYPE, AIOS_PROMPT, AIOS_REPO,
+	//           AIOS_BRANCH, AIOS_SLACK_CHANNEL, AIOS_MEMORY_URL, AIOS_SEARCH_URL
+	// Optional: AIOS_ISSUE_NUMBER, AIOS_SLACK_THREAD_TS, AIOS_WORKSPACE
+	taskType := jobType
+	if taskType == "coding" {
+		taskType = "code"
+	}
+
 	envVars := []corev1.EnvVar{
+		{Name: "AIOS_TASK_ID", Value: task.Name},
+		{Name: "AIOS_TASK_TYPE", Value: taskType},
+		{Name: "AIOS_PROMPT", Value: task.Spec.Prompt},
+		{Name: "AIOS_REPO", Value: task.Spec.Source.Repo},
+		{Name: "AIOS_ISSUE_NUMBER", Value: fmt.Sprintf("%d", task.Spec.Source.IssueNumber)},
+		{Name: "AIOS_BRANCH", Value: fmt.Sprintf("aios/%s", task.Name)},
+		{Name: "AIOS_SLACK_CHANNEL", Value: config.Spec.Slack.Channel},
 		{Name: "CLAUDE_MODEL", Value: config.Spec.Runtime.Model},
-		{Name: "AGENT_TASK_NAME", Value: task.Name},
-		{Name: "AGENT_TASK_NAMESPACE", Value: task.Namespace},
-		{Name: "AGENT_TYPE", Value: task.Spec.AgentType},
-		{Name: "TASK_PROMPT", Value: task.Spec.Prompt},
-		{Name: "GITHUB_REPO", Value: task.Spec.Source.Repo},
-		{Name: "GITHUB_ISSUE_NUMBER", Value: fmt.Sprintf("%d", task.Spec.Source.IssueNumber)},
 		{
 			Name: "ANTHROPIC_API_KEY",
 			ValueFrom: &corev1.EnvVarSource{
@@ -90,6 +141,20 @@ func (b *JobBuilder) BuildJob(
 		},
 	}
 
+	// C3: Inject AIOS_MEMORY_URL and AIOS_SEARCH_URL from AgentConfig Memory config
+	if config.Spec.Memory != nil {
+		envVars = append(envVars,
+			corev1.EnvVar{Name: "AIOS_MEMORY_URL", Value: config.Spec.Memory.MCPServerUrl},
+			corev1.EnvVar{Name: "AIOS_SEARCH_URL", Value: config.Spec.Memory.SearchUrl},
+		)
+	} else {
+		// Still set them as empty to avoid runtime crash on required() check
+		envVars = append(envVars,
+			corev1.EnvVar{Name: "AIOS_MEMORY_URL", Value: ""},
+			corev1.EnvVar{Name: "AIOS_SEARCH_URL", Value: ""},
+		)
+	}
+
 	// Security context: non-root, UID 1000, read-only root filesystem
 	securityContext := &corev1.SecurityContext{
 		RunAsNonRoot:             ptr.To(true),
@@ -105,9 +170,16 @@ func (b *JobBuilder) BuildJob(
 			VolumeSource: corev1.VolumeSource{
 				ConfigMap: &corev1.ConfigMapVolumeSource{
 					LocalObjectReference: corev1.LocalObjectReference{
-						Name: fmt.Sprintf("%s-tool-policy", task.Name),
+						Name: configMapName,
 					},
 				},
+			},
+		},
+		// I6: Add /tmp volume for tools that need it with read-only root filesystem
+		{
+			Name: "tmp",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
 			},
 		},
 	}
@@ -115,12 +187,31 @@ func (b *JobBuilder) BuildJob(
 	volumeMounts := []corev1.VolumeMount{
 		{
 			Name:      "tool-policy",
-			MountPath: "/etc/aios/tool-policy",
+			MountPath: "/etc/aios/toolpolicy",
 			ReadOnly:  true,
+		},
+		// I6: Mount /tmp
+		{
+			Name:      "tmp",
+			MountPath: "/tmp",
+		},
+	}
+
+	// GITHUB_TOKEN env var for init containers
+	githubTokenEnv := corev1.EnvVar{
+		Name: "GITHUB_TOKEN",
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: config.Spec.Auth.GithubAppSecret,
+				},
+				Key: "token",
+			},
 		},
 	}
 
 	var initContainers []corev1.Container
+	result := &BuildResult{}
 
 	switch jobType {
 	case "coding":
@@ -135,34 +226,46 @@ func (b *JobBuilder) BuildJob(
 			Name:      "workspace",
 			MountPath: "/workspace",
 		})
+
+		// C3: Set AIOS_WORKSPACE for coding jobs
+		envVars = append(envVars, corev1.EnvVar{Name: "AIOS_WORKSPACE", Value: "/workspace"})
+
+		// I1: Use authenticated git clone URL
 		initContainers = append(initContainers, corev1.Container{
 			Name:  "git-clone",
 			Image: "alpine/git:latest",
-			Command: []string{"git", "clone",
-				fmt.Sprintf("https://github.com/%s.git", task.Spec.Source.Repo),
-				"/workspace",
+			Command: []string{"sh", "-c",
+				fmt.Sprintf("git clone https://x-access-token:${GITHUB_TOKEN}@github.com/%s.git /workspace", task.Spec.Source.Repo),
 			},
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: "workspace", MountPath: "/workspace"},
+				{Name: "tmp", MountPath: "/tmp"},
 			},
-			Env: []corev1.EnvVar{
-				{
-					Name: "GITHUB_TOKEN",
-					ValueFrom: &corev1.EnvVarSource{
-						SecretKeyRef: &corev1.SecretKeySelector{
-							LocalObjectReference: corev1.LocalObjectReference{
-								Name: config.Spec.Auth.GithubAppSecret,
-							},
-							Key: "token",
-						},
-					},
-				},
-			},
+			Env:             []corev1.EnvVar{githubTokenEnv},
 			SecurityContext: securityContext,
 		})
 
+		// S8: If research PVC exists, mount it read-only and set env var
+		if researchPVCName != "" {
+			volumes = append(volumes, corev1.Volume{
+				Name: "research",
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: researchPVCName,
+						ReadOnly:  true,
+					},
+				},
+			})
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      "research",
+				MountPath: "/research",
+				ReadOnly:  true,
+			})
+			envVars = append(envVars, corev1.EnvVar{Name: "AIOS_RESEARCH_AVAILABLE", Value: "true"})
+		}
+
 	case "research":
-		// Add research-output volume, no git clone
+		// Add research-output volume
 		volumes = append(volumes, corev1.Volume{
 			Name: "research-output",
 			VolumeSource: corev1.VolumeSource{
@@ -174,8 +277,59 @@ func (b *JobBuilder) BuildJob(
 			MountPath: "/research-output",
 		})
 
+		// S8: If this is a "both" task, create a PVC for sharing output with coding job
+		if task.Spec.AgentType == "both" {
+			pvcName := fmt.Sprintf("%s-research-output", task.Name)
+			pvc := &corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      pvcName,
+					Namespace: task.Namespace,
+					Labels:    labels,
+				},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceStorage: resource.MustParse("1Gi"),
+						},
+					},
+				},
+			}
+			if err := ctrl.SetControllerReference(task, pvc, b.Scheme); err != nil {
+				return nil, fmt.Errorf("failed to set owner reference on PVC: %w", err)
+			}
+			result.PVC = pvc
+
+			// Mount the PVC at /workspace/output for the research job to write to
+			volumes = append(volumes, corev1.Volume{
+				Name: "research-pvc",
+				VolumeSource: corev1.VolumeSource{
+					PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+						ClaimName: pvcName,
+					},
+				},
+			})
+			volumeMounts = append(volumeMounts, corev1.VolumeMount{
+				Name:      "research-pvc",
+				MountPath: "/workspace/output",
+			})
+		}
+
 	default:
 		return nil, fmt.Errorf("unknown job type: %s", jobType)
+	}
+
+	// I2: Parse timeout and set ActiveDeadlineSeconds
+	var activeDeadlineSeconds *int64
+	if task.Spec.Timeout != "" {
+		duration, err := time.ParseDuration(task.Spec.Timeout)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse timeout %q: %w", task.Spec.Timeout, err)
+		}
+		seconds := int64(duration.Seconds())
+		if seconds > 0 {
+			activeDeadlineSeconds = &seconds
+		}
 	}
 
 	job := &batchv1.Job{
@@ -183,12 +337,10 @@ func (b *JobBuilder) BuildJob(
 			Name:      jobName,
 			Namespace: task.Namespace,
 			Labels:    labels,
-			Annotations: map[string]string{
-				"aios.kazie.co.uk/tool-policy": string(policyJSON),
-			},
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit: ptr.To(int32(2)),
+			BackoffLimit:          ptr.To(int32(2)),
+			ActiveDeadlineSeconds: activeDeadlineSeconds,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: labels,
@@ -217,5 +369,26 @@ func (b *JobBuilder) BuildJob(
 		return nil, fmt.Errorf("failed to set owner reference: %w", err)
 	}
 
-	return job, nil
+	result.Job = job
+	result.ConfigMap = configMap
+
+	// I9: Build NetworkPolicy spec
+	if policy.Spec.Allowed.Network != nil && len(policy.Spec.Allowed.Network.AllowedHosts) > 0 {
+		allowAll := false
+		for _, host := range policy.Spec.Allowed.Network.AllowedHosts {
+			if host == "*" {
+				allowAll = true
+				break
+			}
+		}
+		result.NetworkPolicy = &NetworkPolicySpec{
+			Name:         fmt.Sprintf("%s-%s-netpol", task.Name, jobType),
+			Namespace:    task.Namespace,
+			Labels:       labels,
+			AllowedHosts: policy.Spec.Allowed.Network.AllowedHosts,
+			AllowAll:     allowAll,
+		}
+	}
+
+	return result, nil
 }

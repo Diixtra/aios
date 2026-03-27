@@ -20,9 +20,12 @@ import (
 	"context"
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -31,13 +34,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	aiosv1alpha1 "github.com/Diixtra/aios/operator/api/v1alpha1"
+	"github.com/Diixtra/aios/operator/internal/metrics"
 )
 
 func newTestReconcilerScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = aiosv1alpha1.AddToScheme(s)
 	_ = clientgoscheme.AddToScheme(s)
+	_ = networkingv1.AddToScheme(s)
 	return s
+}
+
+func newTestMetrics() *metrics.Metrics {
+	reg := prometheus.NewRegistry()
+	return metrics.NewMetrics(reg)
 }
 
 func TestReconcile_PendingCreatesJobAndUpdatesToRunning(t *testing.T) {
@@ -54,8 +64,9 @@ func TestReconcile_PendingCreatesJobAndUpdatesToRunning(t *testing.T) {
 		Build()
 
 	reconciler := &AgentTaskReconciler{
-		Client: client,
-		Scheme: scheme,
+		Client:  client,
+		Scheme:  scheme,
+		Metrics: newTestMetrics(),
 	}
 
 	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
@@ -67,12 +78,27 @@ func TestReconcile_PendingCreatesJobAndUpdatesToRunning(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, result.RequeueAfter > 0)
 
+	// C2: Verify ConfigMap was created
+	var cmList corev1.ConfigMapList
+	err = client.List(context.Background(), &cmList)
+	require.NoError(t, err)
+	require.Len(t, cmList.Items, 1)
+	assert.Equal(t, "test-task-coding-tool-policy", cmList.Items[0].Name)
+	assert.Contains(t, cmList.Items[0].Data, "policy.json")
+
 	// Verify Job was created
 	var jobList batchv1.JobList
 	err = client.List(context.Background(), &jobList)
 	require.NoError(t, err)
 	require.Len(t, jobList.Items, 1)
 	assert.Equal(t, "test-task-coding", jobList.Items[0].Name)
+
+	// I9: Verify NetworkPolicy was created
+	var netpolList networkingv1.NetworkPolicyList
+	err = client.List(context.Background(), &netpolList)
+	require.NoError(t, err)
+	require.Len(t, netpolList.Items, 1)
+	assert.Equal(t, "test-task-coding-netpol", netpolList.Items[0].Name)
 
 	// Verify task status was updated to Running
 	var updatedTask aiosv1alpha1.AgentTask
@@ -101,8 +127,9 @@ func TestReconcile_BothTypeCreatesResearchJobFirst(t *testing.T) {
 		Build()
 
 	reconciler := &AgentTaskReconciler{
-		Client: client,
-		Scheme: scheme,
+		Client:  client,
+		Scheme:  scheme,
+		Metrics: newTestMetrics(),
 	}
 
 	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
@@ -120,6 +147,13 @@ func TestReconcile_BothTypeCreatesResearchJobFirst(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, jobList.Items, 1)
 	assert.Equal(t, "test-task-research", jobList.Items[0].Name)
+
+	// S8: Verify PVC was created for research output sharing
+	var pvcList corev1.PersistentVolumeClaimList
+	err = client.List(context.Background(), &pvcList)
+	require.NoError(t, err)
+	require.Len(t, pvcList.Items, 1)
+	assert.Equal(t, "test-task-research-output", pvcList.Items[0].Name)
 
 	// Verify status shows research pipeline stage
 	var updatedTask aiosv1alpha1.AgentTask
@@ -168,8 +202,9 @@ func TestReconcile_CompletedJobMarksTaskCompleted(t *testing.T) {
 		Build()
 
 	reconciler := &AgentTaskReconciler{
-		Client: client,
-		Scheme: scheme,
+		Client:  client,
+		Scheme:  scheme,
+		Metrics: newTestMetrics(),
 	}
 
 	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
@@ -220,8 +255,9 @@ func TestReconcile_FailedJobMarksTaskFailed(t *testing.T) {
 		Build()
 
 	reconciler := &AgentTaskReconciler{
-		Client: client,
-		Scheme: scheme,
+		Client:  client,
+		Scheme:  scheme,
+		Metrics: newTestMetrics(),
 	}
 
 	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
@@ -257,8 +293,9 @@ func TestReconcile_TerminalStatesAreNoOp(t *testing.T) {
 				Build()
 
 			reconciler := &AgentTaskReconciler{
-				Client: client,
-				Scheme: scheme,
+				Client:  client,
+				Scheme:  scheme,
+				Metrics: newTestMetrics(),
 			}
 
 			result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
@@ -272,4 +309,315 @@ func TestReconcile_TerminalStatesAreNoOp(t *testing.T) {
 			assert.False(t, result.Requeue)
 		})
 	}
+}
+
+func TestReconcile_BothTypeResearchCompleteThenCoding(t *testing.T) {
+	scheme := newTestReconcilerScheme()
+	task := newTestTask()
+	task.Spec.AgentType = "both"
+	task.Status.Phase = "Running"
+	task.Status.PipelineStage = "research"
+	task.Status.ResearchJobName = "test-task-research"
+	now := metav1.Now()
+	task.Status.StartedAt = &now
+
+	config := newTestConfig()
+	policy := newTestPolicy()
+
+	// Create a completed research Job
+	researchJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-task-research",
+			Namespace: "default",
+		},
+		Status: batchv1.JobStatus{
+			Conditions: []batchv1.JobCondition{
+				{
+					Type:   batchv1.JobComplete,
+					Status: "True",
+				},
+			},
+		},
+	}
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(task, config, policy, researchJob).
+		WithStatusSubresource(task).
+		Build()
+
+	reconciler := &AgentTaskReconciler{
+		Client:  client,
+		Scheme:  scheme,
+		Metrics: newTestMetrics(),
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      task.Name,
+			Namespace: task.Namespace,
+		},
+	})
+	require.NoError(t, err)
+	assert.True(t, result.RequeueAfter > 0)
+
+	// Verify coding job was created
+	var jobList batchv1.JobList
+	err = client.List(context.Background(), &jobList)
+	require.NoError(t, err)
+	// Should have 2 jobs (research + coding)
+	found := false
+	for _, j := range jobList.Items {
+		if j.Name == "test-task-coding" {
+			found = true
+		}
+	}
+	assert.True(t, found, "coding job should be created")
+
+	// Verify status was updated to coding stage
+	var updatedTask aiosv1alpha1.AgentTask
+	err = client.Get(context.Background(), types.NamespacedName{
+		Name:      task.Name,
+		Namespace: task.Namespace,
+	}, &updatedTask)
+	require.NoError(t, err)
+	assert.Equal(t, "coding", updatedTask.Status.PipelineStage)
+	assert.Equal(t, "test-task-coding", updatedTask.Status.JobName)
+}
+
+func TestReconcile_NotFoundTaskIsNoOp(t *testing.T) {
+	scheme := newTestReconcilerScheme()
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		Build()
+
+	reconciler := &AgentTaskReconciler{
+		Client:  client,
+		Scheme:  scheme,
+		Metrics: newTestMetrics(),
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      "nonexistent",
+			Namespace: "default",
+		},
+	})
+	require.NoError(t, err)
+	assert.Zero(t, result.RequeueAfter)
+}
+
+func TestReconcile_EmptyPhaseInitializesToPending(t *testing.T) {
+	scheme := newTestReconcilerScheme()
+	task := newTestTask()
+	task.Status.Phase = ""
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(task).
+		WithStatusSubresource(task).
+		Build()
+
+	reconciler := &AgentTaskReconciler{
+		Client:  client,
+		Scheme:  scheme,
+		Metrics: newTestMetrics(),
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      task.Name,
+			Namespace: task.Namespace,
+		},
+	})
+	require.NoError(t, err)
+	assert.True(t, result.Requeue)
+
+	var updatedTask aiosv1alpha1.AgentTask
+	err = client.Get(context.Background(), types.NamespacedName{
+		Name:      task.Name,
+		Namespace: task.Namespace,
+	}, &updatedTask)
+	require.NoError(t, err)
+	assert.Equal(t, "Pending", updatedTask.Status.Phase)
+}
+
+func TestReconcile_ReviewPhaseRequeues(t *testing.T) {
+	scheme := newTestReconcilerScheme()
+	task := newTestTask()
+	task.Status.Phase = "Review"
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(task).
+		WithStatusSubresource(task).
+		Build()
+
+	reconciler := &AgentTaskReconciler{
+		Client:  client,
+		Scheme:  scheme,
+		Metrics: newTestMetrics(),
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      task.Name,
+			Namespace: task.Namespace,
+		},
+	})
+	require.NoError(t, err)
+	assert.True(t, result.RequeueAfter > 0)
+}
+
+func TestReconcile_UnknownPhaseIsNoOp(t *testing.T) {
+	scheme := newTestReconcilerScheme()
+	task := newTestTask()
+	task.Status.Phase = "Unknown"
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(task).
+		WithStatusSubresource(task).
+		Build()
+
+	reconciler := &AgentTaskReconciler{
+		Client:  client,
+		Scheme:  scheme,
+		Metrics: newTestMetrics(),
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      task.Name,
+			Namespace: task.Namespace,
+		},
+	})
+	require.NoError(t, err)
+	assert.Zero(t, result.RequeueAfter)
+}
+
+func TestReconcile_RunningJobStillActive(t *testing.T) {
+	scheme := newTestReconcilerScheme()
+	task := newTestTask()
+	task.Status.Phase = "Running"
+	task.Status.PipelineStage = "coding"
+	task.Status.JobName = "test-task-coding"
+
+	// Job exists but has no completion/failure conditions
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-task-coding",
+			Namespace: "default",
+		},
+	}
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(task, job).
+		WithStatusSubresource(task).
+		Build()
+
+	reconciler := &AgentTaskReconciler{
+		Client:  client,
+		Scheme:  scheme,
+		Metrics: newTestMetrics(),
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      task.Name,
+			Namespace: task.Namespace,
+		},
+	})
+	require.NoError(t, err)
+	assert.True(t, result.RequeueAfter > 0)
+}
+
+func TestReconcile_RunningNoJobName(t *testing.T) {
+	scheme := newTestReconcilerScheme()
+	task := newTestTask()
+	task.Status.Phase = "Running"
+	task.Status.PipelineStage = "coding"
+	task.Status.JobName = ""
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(task).
+		WithStatusSubresource(task).
+		Build()
+
+	reconciler := &AgentTaskReconciler{
+		Client:  client,
+		Scheme:  scheme,
+		Metrics: newTestMetrics(),
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      task.Name,
+			Namespace: task.Namespace,
+		},
+	})
+	require.NoError(t, err)
+	assert.True(t, result.RequeueAfter > 0)
+}
+
+func TestReconcile_RunningJobNotFound(t *testing.T) {
+	scheme := newTestReconcilerScheme()
+	task := newTestTask()
+	task.Status.Phase = "Running"
+	task.Status.PipelineStage = "coding"
+	task.Status.JobName = "test-task-coding"
+
+	// No job object created - simulates job not found
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(task).
+		WithStatusSubresource(task).
+		Build()
+
+	reconciler := &AgentTaskReconciler{
+		Client:  client,
+		Scheme:  scheme,
+		Metrics: newTestMetrics(),
+	}
+
+	result, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      task.Name,
+			Namespace: task.Namespace,
+		},
+	})
+	require.NoError(t, err)
+	assert.True(t, result.RequeueAfter > 0)
+}
+
+func TestReconcile_NilMetricsDoesNotPanic(t *testing.T) {
+	scheme := newTestReconcilerScheme()
+	task := newTestTask()
+	task.Status.Phase = "Pending"
+	config := newTestConfig()
+	policy := newTestPolicy()
+
+	client := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(task, config, policy).
+		WithStatusSubresource(task).
+		Build()
+
+	// I4: Metrics is nil, should not panic
+	reconciler := &AgentTaskReconciler{
+		Client:  client,
+		Scheme:  scheme,
+		Metrics: nil,
+	}
+
+	_, err := reconciler.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      task.Name,
+			Namespace: task.Namespace,
+		},
+	})
+	require.NoError(t, err)
 }

@@ -28,6 +28,9 @@ import (
 	aiosv1alpha1 "github.com/Diixtra/aios/operator/api/v1alpha1"
 )
 
+// CleanupClient is the client interface needed by CleanupCompletedJobs.
+type CleanupClient = client.Client
+
 // CleanupCompletedJobs lists all AgentTasks in a namespace and deletes
 // associated Jobs for tasks that have been completed or failed for longer
 // than the retention period. Returns the count of cleaned jobs.
