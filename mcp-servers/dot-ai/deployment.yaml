@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-dot-ai
+  namespace: mcp-servers
+  labels:
+    app.kubernetes.io/name: mcp-dot-ai
+    app.kubernetes.io/part-of: mcp-servers
+    app.kubernetes.io/managed-by: flux
+  annotations:
+    reloader.stakater.com/auto: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mcp-dot-ai
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mcp-dot-ai
+        app.kubernetes.io/part-of: mcp-servers
+        app.kubernetes.io/managed-by: flux
+    spec:
+      serviceAccountName: mcp-dot-ai
+      containers:
+        - name: dot-ai
+          image: ghcr.io/vfarcic/dot-ai:1.12.0
+          ports:
+            - name: http
+              containerPort: 3456
+              protocol: TCP
+          env:
+            - name: AI_PROVIDER
+              value: "anthropic"
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: anthropic-api-key
+                  key: credential
+            - name: TRANSPORT_TYPE
+              value: "http"
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: "3456"
+            - name: DOT_AI_SESSION_DIR
+              value: "/app/sessions"
+          startupProbe:
+            tcpSocket:
+              port: 3456
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 12
+          readinessProbe:
+            tcpSocket:
+              port: 3456
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
