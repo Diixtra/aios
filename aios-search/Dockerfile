@@ -7,7 +7,7 @@ RUN pip install --no-cache-dir uv
 COPY pyproject.toml .
 COPY src/ src/
 
-RUN uv pip install --system ".[dev]"
+RUN uv pip install --system "."
 
 EXPOSE 8000
 
