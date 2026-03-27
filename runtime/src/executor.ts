@@ -24,7 +24,7 @@ export async function executeTask(
   toolPolicy: ToolPolicy,
 ): Promise<PipelineResult> {
   const startTime = Date.now();
-  const _sandbox = new Sandbox(toolPolicy);
+  const sandbox = new Sandbox(toolPolicy);
   const fabric = new FabricRunner();
   const github = new GitHubClient(config.repo);
   const memory = new MemoryClient(config.memoryUrl, config.searchUrl);
@@ -71,6 +71,7 @@ export async function executeTask(
       slack,
       threadTs,
       planResult.plan,
+      sandbox,
     );
 
     // Verify with retry loop
@@ -85,6 +86,7 @@ export async function executeTask(
         slack,
         threadTs,
         attempt,
+        sandbox,
       );
 
       if (verifyResult.passed) {
@@ -100,6 +102,7 @@ export async function executeTask(
           slack,
           threadTs,
           `${planResult.plan}\n\n## Verification Feedback (attempt ${attempt})\n${feedback}`,
+          sandbox,
         );
       }
     }

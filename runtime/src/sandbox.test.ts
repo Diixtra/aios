@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { Sandbox, matchGlob } from "./sandbox.js";
+import { describe, it, expect, vi } from "vitest";
+import { Sandbox, matchGlob, sandboxedExec } from "./sandbox.js";
 import type { ToolPolicy } from "./types.js";
 
 const testPolicy: ToolPolicy = {
@@ -84,6 +84,42 @@ describe("Sandbox", () => {
       expect(result.reason).toContain("metacharacter");
     });
 
+    it("blocks shell metacharacter: newline", () => {
+      const result = sandbox.validateCommand("git status\nrm -rf /");
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain("metacharacter");
+    });
+
+    it("blocks shell metacharacter: carriage return", () => {
+      const result = sandbox.validateCommand("git status\rrm -rf /");
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain("metacharacter");
+    });
+
+    it("blocks shell metacharacter: output redirect", () => {
+      const result = sandbox.validateCommand("git log > /etc/passwd");
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain("metacharacter");
+    });
+
+    it("blocks shell metacharacter: input redirect", () => {
+      const result = sandbox.validateCommand("node < /etc/passwd");
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain("metacharacter");
+    });
+
+    it("blocks shell metacharacter: comment injection", () => {
+      const result = sandbox.validateCommand("git status # ignore rest");
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain("metacharacter");
+    });
+
+    it("blocks shell metacharacter: tilde expansion", () => {
+      const result = sandbox.validateCommand("cat ~/secrets");
+      expect(result.allowed).toBe(false);
+      expect(result.reason).toContain("metacharacter");
+    });
+
     it("blocks path traversal", () => {
       const result = sandbox.validateCommand("cat ../../../etc/passwd");
       expect(result.allowed).toBe(false);
@@ -160,5 +196,34 @@ describe("matchGlob", () => {
   it("rejects non-matching paths", () => {
     expect(matchGlob("/workspace/**", "/etc/passwd")).toBe(false);
     expect(matchGlob("/workspace/*.ts", "/workspace/index.js")).toBe(false);
+  });
+});
+
+describe("sandboxedExec", () => {
+  const policy: ToolPolicy = {
+    allowedCommands: ["git ", "npm "],
+    deniedCommands: ["rm -rf /"],
+    writablePaths: ["/workspace/**"],
+    readablePaths: ["/workspace/**"],
+  };
+  const sandbox = new Sandbox(policy);
+
+  it("blocks commands that fail sandbox validation", async () => {
+    const result = await sandboxedExec(sandbox, "curl", ["http://evil.com"], "/tmp");
+    expect(result.exitCode).toBe(126);
+    expect(result.stderr).toContain("Sandbox blocked command");
+  });
+
+  it("blocks commands with metacharacters", async () => {
+    const result = await sandboxedExec(sandbox, "git", ["status;rm", "-rf", "/"], "/tmp");
+    expect(result.exitCode).toBe(126);
+    expect(result.stderr).toContain("metacharacter");
+  });
+
+  it("allows valid commands through", async () => {
+    // git --version is a safe command that should succeed on any system with git
+    const result = await sandboxedExec(sandbox, "git", ["--version"], "/tmp");
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain("git version");
   });
 });

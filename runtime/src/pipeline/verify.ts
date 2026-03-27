@@ -1,7 +1,7 @@
-import { execFile } from "node:child_process";
 import type { TaskConfig, CommandResult } from "../types.js";
 import type { FabricRunner } from "../fabric.js";
 import type { SlackNotifier } from "../slack.js";
+import { type Sandbox, sandboxedExec } from "../sandbox.js";
 
 export interface VerifyResult {
   /** Whether verification passed */
@@ -15,30 +15,6 @@ export interface VerifyResult {
 }
 
 /**
- * Execute a command in the workspace and return the result.
- */
-function execInWorkspace(
-  command: string,
-  args: string[],
-  cwd: string,
-): Promise<CommandResult> {
-  return new Promise((resolve) => {
-    execFile(
-      command,
-      args,
-      { cwd, maxBuffer: 10 * 1024 * 1024 },
-      (error, stdout, stderr) => {
-        resolve({
-          exitCode: error?.code !== undefined ? (error.code as number) : 0,
-          stdout: stdout ?? "",
-          stderr: stderr ?? "",
-        });
-      },
-    );
-  });
-}
-
-/**
  * Verify stage: runs tests, fabric review, and self-review.
  */
 export async function runVerify(
@@ -47,6 +23,7 @@ export async function runVerify(
   slack: SlackNotifier,
   threadTs: string,
   attempt: number,
+  sandbox: Sandbox,
 ): Promise<VerifyResult> {
   const failureReasons: string[] = [];
 
@@ -57,7 +34,8 @@ export async function runVerify(
   );
 
   // Run tests
-  const testResult = await execInWorkspace(
+  const testResult = await sandboxedExec(
+    sandbox,
     "npm",
     ["test"],
     config.workspace,
@@ -68,7 +46,8 @@ export async function runVerify(
   }
 
   // Run fabric code review
-  const diffResult = await execInWorkspace(
+  const diffResult = await sandboxedExec(
+    sandbox,
     "git",
     ["diff", "--cached"],
     config.workspace,

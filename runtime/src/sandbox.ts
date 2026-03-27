@@ -1,4 +1,5 @@
-import type { ToolPolicy } from "./types.js";
+import { execFile } from "node:child_process";
+import type { ToolPolicy, CommandResult } from "./types.js";
 
 /**
  * Result of a command or file access validation.
@@ -11,7 +12,7 @@ export interface ValidationResult {
 /**
  * Shell metacharacters that are blocked to prevent injection.
  */
-const BLOCKED_METACHARACTERS = /[;|&`$(){}]/;
+const BLOCKED_METACHARACTERS = /[;|&`$(){}><#~\n\r]/;
 
 /**
  * Path traversal pattern.
@@ -107,6 +108,43 @@ export class Sandbox {
       reason: `Path "${filePath}" does not match any ${mode}able pattern`,
     };
   }
+}
+
+/**
+ * Execute a command after validating it against the sandbox policy.
+ * Rejects commands that fail validation without spawning a process.
+ */
+export function sandboxedExec(
+  sandbox: Sandbox,
+  command: string,
+  args: string[],
+  cwd: string,
+): Promise<CommandResult> {
+  const fullCommand = `${command} ${args.join(" ")}`.trim();
+  const validation = sandbox.validateCommand(fullCommand);
+
+  if (!validation.allowed) {
+    return Promise.resolve({
+      exitCode: 126,
+      stdout: "",
+      stderr: `Sandbox blocked command: ${validation.reason}`,
+    });
+  }
+
+  return new Promise((resolve) => {
+    execFile(
+      command,
+      args,
+      { cwd, maxBuffer: 10 * 1024 * 1024 },
+      (error, stdout, stderr) => {
+        resolve({
+          exitCode: error?.code !== undefined ? (error.code as number) : 0,
+          stdout: stdout ?? "",
+          stderr: stderr ?? "",
+        });
+      },
+    );
+  });
 }
 
 /**

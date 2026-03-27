@@ -56,12 +56,17 @@ export async function loadToolPolicy(
       readablePaths: parsed.readablePaths ?? [],
     };
   } catch {
-    // Default restrictive policy when no file is present
+    // Missing policy file is a deployment error — deny everything and log loudly
+    console.error(
+      `FATAL: Failed to read tool policy from ${path}. ` +
+        "Falling back to deny-all policy. " +
+        "This is a deployment error — ensure the ToolPolicy ConfigMap is mounted.",
+    );
     return {
-      allowedCommands: ["git ", "npm ", "npx ", "node "],
-      deniedCommands: ["rm -rf /", "sudo "],
-      writablePaths: ["/workspace/**"],
-      readablePaths: ["/workspace/**", "/etc/aios/**"],
+      allowedCommands: [],
+      deniedCommands: [],
+      writablePaths: [],
+      readablePaths: [],
     };
   }
 }

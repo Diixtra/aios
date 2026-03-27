@@ -1,5 +1,6 @@
 import type { TaskConfig } from "../types.js";
 import type { SlackNotifier } from "../slack.js";
+import type { Sandbox } from "../sandbox.js";
 
 export interface ImplementResult {
   /** Whether implementation completed without errors */
@@ -25,6 +26,7 @@ export async function runImplement(
   slack: SlackNotifier,
   threadTs: string,
   plan: string,
+  _sandbox: Sandbox,
 ): Promise<ImplementResult> {
   await slack.postToThread(
     config.slackChannel,
