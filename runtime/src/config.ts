@@ -22,13 +22,14 @@ export function loadTaskConfig(): TaskConfig {
   const optional = (name: string): string | undefined => process.env[name];
 
   const issueNumberStr = optional("AIOS_ISSUE_NUMBER");
+  const issueNumberParsed = issueNumberStr ? parseInt(issueNumberStr, 10) : undefined;
 
   return {
     taskId: required("AIOS_TASK_ID"),
     taskType: required("AIOS_TASK_TYPE") as "code" | "research",
     prompt: required("AIOS_PROMPT"),
     repo: required("AIOS_REPO"),
-    issueNumber: issueNumberStr ? parseInt(issueNumberStr, 10) : undefined,
+    issueNumber: issueNumberParsed && issueNumberParsed > 0 ? issueNumberParsed : undefined,
     branch: required("AIOS_BRANCH"),
     slackChannel: required("AIOS_SLACK_CHANNEL"),
     slackThreadTs: optional("AIOS_SLACK_THREAD_TS"),

@@ -1,11 +1,23 @@
 /**
- * Search result from memory or semantic search.
+ * Search result from memory (Qdrant).
  */
 export interface SearchResult {
   id: string;
   content: string;
   score: number;
   metadata?: Record<string, unknown>;
+}
+
+/**
+ * Search result from aios-search (vault/codebase semantic search).
+ */
+export interface VaultSearchResult {
+  file_path: string;
+  title: string;
+  score: number;
+  snippet: string;
+  type?: string;
+  entity?: string[];
 }
 
 /**
@@ -80,7 +92,7 @@ export class MemoryClient {
   async semanticSearch(
     query: string,
     topK: number = 5,
-  ): Promise<SearchResult[]> {
+  ): Promise<VaultSearchResult[]> {
     const response = await this.fetchFn(`${this.searchUrl}/search`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -93,7 +105,7 @@ export class MemoryClient {
       );
     }
 
-    const data = (await response.json()) as { results: SearchResult[] };
+    const data = (await response.json()) as { results: VaultSearchResult[] };
     return data.results;
   }
 }

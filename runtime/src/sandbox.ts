@@ -138,7 +138,7 @@ export function sandboxedExec(
       { cwd, maxBuffer: 10 * 1024 * 1024 },
       (error, stdout, stderr) => {
         resolve({
-          exitCode: error?.code !== undefined ? (error.code as number) : 0,
+          exitCode: error == null ? 0 : typeof error.code === 'number' ? error.code : (error as any).exitCode ?? 1,
           stdout: stdout ?? "",
           stderr: stderr ?? "",
         });

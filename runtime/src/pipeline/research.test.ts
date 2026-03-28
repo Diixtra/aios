@@ -41,7 +41,7 @@ describe("runResearch", () => {
       { content: "Redis is fast", score: 0.9 },
     ]);
     mockMemory.semanticSearch.mockResolvedValue([
-      { content: "Memcached comparison doc", score: 0.8 },
+      { file_path: "docs/caching.md", title: "Caching Comparison", snippet: "Memcached comparison doc", score: 0.8 },
     ]);
     mockFabric.run.mockResolvedValue({
       exitCode: 0,

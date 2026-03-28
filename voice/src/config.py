@@ -13,6 +13,7 @@ class VoiceConfig:
     local_ai_url: str = "http://localhost:8080"
     slack_token: str = ""
     anthropic_api_key: str = ""
+    voice_auth_token: str = ""
     port: int = 8080
     whisper_model: str = "whisper-base"
     tts_model: str = "piper"
@@ -24,6 +25,7 @@ class VoiceConfig:
             local_ai_url=os.getenv("LOCAL_AI_URL", "http://localhost:8080"),
             slack_token=os.getenv("SLACK_TOKEN", ""),
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
+            voice_auth_token=os.getenv("VOICE_AUTH_TOKEN", ""),
             port=int(os.getenv("PORT", "8080")),
             whisper_model=os.getenv("WHISPER_MODEL", "whisper-base"),
             tts_model=os.getenv("TTS_MODEL", "piper"),

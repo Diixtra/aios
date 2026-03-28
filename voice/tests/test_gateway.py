@@ -1,4 +1,4 @@
-"""Tests for the voice gateway HTTP endpoints."""
+"""Tests for the voice gateway HTTP and WebSocket endpoints."""
 
 from __future__ import annotations
 
@@ -6,8 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from starlette.testclient import TestClient
 
-from src.gateway import _get_claude_response, app
+from src.gateway import _get_claude_response, app, config
 
 
 @pytest.mark.asyncio
@@ -94,3 +95,39 @@ async def test_get_claude_response_maps_agent_to_assistant() -> None:
     assert messages[0]["role"] == "user"
     assert messages[1]["role"] == "assistant"
     assert messages[2]["role"] == "user"
+
+
+def test_ws_rejects_missing_token() -> None:
+    """WebSocket connection without token is rejected with 4001."""
+    from src.config import VoiceConfig
+
+    fake_config = VoiceConfig(voice_auth_token="secret-token")
+    client = TestClient(app)
+    with patch("src.gateway.config", fake_config):
+        with pytest.raises(Exception):
+            with client.websocket_connect("/ws/test-task"):
+                pass  # pragma: no cover
+
+
+def test_ws_rejects_invalid_token() -> None:
+    """WebSocket connection with wrong token is rejected with 4001."""
+    from src.config import VoiceConfig
+
+    fake_config = VoiceConfig(voice_auth_token="secret-token")
+    client = TestClient(app)
+    with patch("src.gateway.config", fake_config):
+        with pytest.raises(Exception):
+            with client.websocket_connect("/ws/test-task?token=wrong"):
+                pass  # pragma: no cover
+
+
+def test_ws_accepts_valid_token() -> None:
+    """WebSocket connection with correct token is accepted."""
+    from src.config import VoiceConfig
+
+    fake_config = VoiceConfig(voice_auth_token="secret-token")
+    client = TestClient(app)
+    with patch("src.gateway.config", fake_config):
+        with client.websocket_connect("/ws/test-task?token=secret-token") as ws:
+            # Connection accepted; close cleanly
+            pass

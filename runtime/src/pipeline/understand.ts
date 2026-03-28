@@ -39,7 +39,7 @@ export async function runUnderstand(
     ...memoryResults.map((r) => `- [${r.score.toFixed(2)}] ${r.content}`),
     "",
     "## Relevant Vault Docs",
-    ...vaultResults.map((r) => `- [${r.score.toFixed(2)}] ${r.content}`),
+    ...vaultResults.map((r) => `- [${r.score.toFixed(2)}] ${r.snippet}`),
   ].join("\n");
 
   // Enrich understanding with fabric

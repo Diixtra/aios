@@ -407,6 +407,29 @@ func TestBuildJob_ResearchEnvVars(t *testing.T) {
 
 	// C3: Research job should have AIOS_TASK_TYPE=research
 	assert.Equal(t, "research", envMap["AIOS_TASK_TYPE"])
+
+	// C3: Research job should have AIOS_WORKSPACE pointing to writable directory
+	assert.Equal(t, "/research-output", envMap["AIOS_WORKSPACE"])
+}
+
+func TestBuildJob_IssueNumberZero_OmitsEnvVar(t *testing.T) {
+	builder := &JobBuilder{Scheme: newTestScheme()}
+	task := newTestTask()
+	task.Spec.Source.IssueNumber = 0
+	config := newTestConfig()
+	policy := newTestPolicy()
+
+	result, err := builder.BuildJob(task, config, policy, "coding", "")
+	require.NoError(t, err)
+
+	job := result.Job
+	envNames := make(map[string]bool)
+	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
+		envNames[e.Name] = true
+	}
+
+	// AIOS_ISSUE_NUMBER should not be set when IssueNumber is 0
+	assert.False(t, envNames["AIOS_ISSUE_NUMBER"], "AIOS_ISSUE_NUMBER should not be set when IssueNumber is 0")
 }
 
 func TestBuildJob_ToolPolicyConfigMap_FlatShape(t *testing.T) {

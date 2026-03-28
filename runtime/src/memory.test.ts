@@ -111,7 +111,7 @@ describe("MemoryClient", () => {
   describe("semanticSearch", () => {
     it("searches via aios-search and returns results", async () => {
       const results = [
-        { id: "doc1", content: "vault doc", score: 0.95, metadata: {} },
+        { file_path: "docs/arch.md", title: "Architecture", score: 0.95, snippet: "vault doc" },
       ];
 
       mockFetch.mockResolvedValue({

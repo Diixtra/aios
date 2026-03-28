@@ -56,6 +56,12 @@ describe("loadTaskConfig", () => {
     expect(config.issueNumber).toBeUndefined();
   });
 
+  it("treats issueNumber 0 as undefined", () => {
+    process.env.AIOS_ISSUE_NUMBER = "0";
+    const config = loadTaskConfig();
+    expect(config.issueNumber).toBeUndefined();
+  });
+
   it("uses optional slack thread ts", () => {
     process.env.AIOS_SLACK_THREAD_TS = "1234.5678";
     const config = loadTaskConfig();

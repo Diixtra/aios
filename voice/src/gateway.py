@@ -100,9 +100,16 @@ async def voice_ws(
 
     Query Parameters:
         task: The AIOS task name (path param).
+        token: Authentication token (required).
         channel: Slack channel ID for transcript posting.
         thread: Slack thread timestamp for transcript posting.
     """
+    # Validate auth token from query params
+    token = websocket.query_params.get("token")
+    if not config.voice_auth_token or not token or token != config.voice_auth_token:
+        await websocket.close(code=4001, reason="Unauthorized")
+        return
+
     await websocket.accept()
 
     session = sessions.get(task_name)

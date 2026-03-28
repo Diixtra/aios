@@ -33,7 +33,7 @@ export async function runResearch(
     ...memoryResults.map((r) => `- ${r.content}`),
     "",
     "## Vault Results",
-    ...vaultResults.map((r) => `- ${r.content}`),
+    ...vaultResults.map((r) => `- ${r.snippet}`),
     "",
     "## Task Prompt",
     config.prompt,

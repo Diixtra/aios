@@ -137,7 +137,6 @@ func (b *JobBuilder) BuildJob(
 		{Name: "AIOS_TASK_TYPE", Value: taskType},
 		{Name: "AIOS_PROMPT", Value: task.Spec.Prompt},
 		{Name: "AIOS_REPO", Value: task.Spec.Source.Repo},
-		{Name: "AIOS_ISSUE_NUMBER", Value: fmt.Sprintf("%d", task.Spec.Source.IssueNumber)},
 		{Name: "AIOS_BRANCH", Value: fmt.Sprintf("aios/%s", task.Name)},
 		{Name: "AIOS_SLACK_CHANNEL", Value: config.Spec.Slack.Channel},
 		{Name: "CLAUDE_MODEL", Value: config.Spec.Runtime.Model},
@@ -163,6 +162,14 @@ func (b *JobBuilder) BuildJob(
 				},
 			},
 		},
+	}
+
+	// C3: Only inject AIOS_ISSUE_NUMBER when it is a real issue (> 0)
+	if task.Spec.Source.IssueNumber > 0 {
+		envVars = append(envVars, corev1.EnvVar{
+			Name:  "AIOS_ISSUE_NUMBER",
+			Value: fmt.Sprintf("%d", task.Spec.Source.IssueNumber),
+		})
 	}
 
 	// C3: Only inject AIOS_MEMORY_URL and AIOS_SEARCH_URL when Memory is configured.
@@ -295,6 +302,9 @@ func (b *JobBuilder) BuildJob(
 			Name:      "research-output",
 			MountPath: "/research-output",
 		})
+
+		// C3: Set AIOS_WORKSPACE for research jobs to a writable directory
+		envVars = append(envVars, corev1.EnvVar{Name: "AIOS_WORKSPACE", Value: "/research-output"})
 
 		// S8: If this is a "both" task, create a PVC for sharing output with coding job
 		if task.Spec.AgentType == "both" {

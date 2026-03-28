@@ -40,7 +40,7 @@ describe("runUnderstand", () => {
       { content: "Token refresh was added in v2.1", score: 0.85 },
     ]);
     mockMemory.semanticSearch.mockResolvedValue([
-      { content: "Auth architecture doc", score: 0.9 },
+      { file_path: "docs/auth.md", title: "Auth Architecture", snippet: "Auth architecture doc", score: 0.9 },
     ]);
     mockFabric.run.mockResolvedValue({
       exitCode: 0,

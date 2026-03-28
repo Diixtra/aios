@@ -95,10 +95,13 @@
     <script>
         const params = new URLSearchParams(window.location.search);
         const taskName = params.get('task') || 'default';
+        const authToken = params.get('token') || '';
         document.getElementById('task-name').textContent = taskName;
 
         const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const ws = new WebSocket(`${protocol}//${location.host}/ws/${taskName}`);
+        const wsParams = new URLSearchParams();
+        if (authToken) wsParams.set('token', authToken);
+        const ws = new WebSocket(`${protocol}//${location.host}/ws/${taskName}?${wsParams.toString()}`);
         const btn = document.getElementById('push-btn');
         const status = document.getElementById('status');
         const transcript = document.getElementById('transcript');
