@@ -1,0 +1,8 @@
+# This kustomization.yaml is not intended to be run by itself,
+# since it depends on service name and target namespace.
+# It should be run by config/default.
+resources:
+- bases/aios.kazie.co.uk_agenttasks.yaml
+- bases/aios.kazie.co.uk_agentconfigs.yaml
+- bases/aios.kazie.co.uk_toolpolicies.yaml
+#+kubebuilder:scaffold:crdkustomizeresource

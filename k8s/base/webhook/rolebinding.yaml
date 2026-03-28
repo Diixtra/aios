@@ -1,0 +1,16 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: aios-webhook
+  namespace: aios
+  labels:
+    app.kubernetes.io/name: aios-webhook
+    app.kubernetes.io/part-of: aios
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: aios-webhook
+subjects:
+  - kind: ServiceAccount
+    name: aios-webhook
+    namespace: aios

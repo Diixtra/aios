@@ -1,0 +1,110 @@
+---
+# Default deny all ingress and egress in the aios namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: aios
+  labels:
+    app.kubernetes.io/part-of: aios
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Operator: allow egress to k8s API, metrics, and external APIs
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: operator-egress
+  namespace: aios
+  labels:
+    app.kubernetes.io/part-of: aios
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: aios-operator
+  policyTypes:
+    - Egress
+  egress:
+    # Allow DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Allow HTTPS (k8s API, GitHub, Anthropic)
+    - ports:
+        - port: 443
+          protocol: TCP
+    # Allow k8s API server
+    - ports:
+        - port: 6443
+          protocol: TCP
+---
+# Webhook: allow ingress from Traefik
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: webhook-ingress
+  namespace: aios
+  labels:
+    app.kubernetes.io/part-of: aios
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: aios-webhook
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - port: 8080
+          protocol: TCP
+---
+# Voice: allow ingress from Traefik + egress to local-ai and HTTPS
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: voice-ingress-egress
+  namespace: aios
+  labels:
+    app.kubernetes.io/part-of: aios
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: aios-voice
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - port: 8080
+          protocol: TCP
+  egress:
+    # Allow DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Allow local-ai (port 8080 in local-ai namespace)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: local-ai
+      ports:
+        - port: 8080
+          protocol: TCP
+    # Allow HTTPS (Anthropic API, Slack API)
+    - ports:
+        - port: 443
+          protocol: TCP
