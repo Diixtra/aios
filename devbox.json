@@ -3,7 +3,7 @@
   "packages": [
     "go@1.23",
     "nodejs@22",
-    "python@3.12",
+    "python@3.14",
     "uv",
     "kubectl",
     "kubernetes-helm",
