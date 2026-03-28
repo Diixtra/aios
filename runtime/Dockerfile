@@ -1,5 +1,5 @@
 # Build stage
-FROM node:22-slim AS builder
+FROM node:22.22.2-slim AS builder
 
 WORKDIR /app
 
@@ -11,7 +11,7 @@ COPY src/ ./src/
 RUN npx tsc
 
 # Runtime stage
-FROM node:22-slim
+FROM node:22.22.2-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
