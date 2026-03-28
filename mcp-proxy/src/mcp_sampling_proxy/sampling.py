@@ -158,7 +158,6 @@ class SamplingExecutor:
 
             if obj.get("type") == "assistant":
                 assistant_message = obj.get("message", {})
-                break
 
         if not assistant_message:
             _debug(config, f"claude output: {stdout_text[:500]}")
