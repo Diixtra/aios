@@ -1,0 +1,17 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: aios-ticktick-sync
+  namespace: aios
+  labels:
+    app.kubernetes.io/name: aios-ticktick-sync
+    app.kubernetes.io/part-of: aios
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`webhook.kazie.co.uk`) && PathPrefix(`/ticktick-sync`)
+      kind: Rule
+      services:
+        - name: aios-ticktick-sync
+          port: 8080

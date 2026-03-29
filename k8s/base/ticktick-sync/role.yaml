@@ -1,0 +1,24 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: aios-ticktick-sync
+  namespace: aios
+  labels:
+    app.kubernetes.io/name: aios-ticktick-sync
+    app.kubernetes.io/part-of: aios
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    resourceNames:
+      - ticktick-sync-state
+    verbs:
+      - get
+      - update
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - create

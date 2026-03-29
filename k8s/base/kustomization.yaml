@@ -30,6 +30,15 @@ resources:
   - voice/service.yaml
   - voice/ingress-route.yaml
 
+  # TickTick Sync
+  - secrets/ticktick-oauth.yaml
+  - ticktick-sync/serviceaccount.yaml
+  - ticktick-sync/role.yaml
+  - ticktick-sync/rolebinding.yaml
+  - ticktick-sync/deployment.yaml
+  - ticktick-sync/service.yaml
+  - ticktick-sync/ingress-route.yaml
+
   # Policies and config
   - policies/default-sre-toolpolicy.yaml
   - policies/research-toolpolicy.yaml
