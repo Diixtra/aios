@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -121,5 +122,59 @@ func TestCompleteTask(t *testing.T) {
 	err := c.CompleteTask(context.Background(), "p1", "t1")
 	if err != nil {
 		t.Fatalf("CompleteTask error: %v", err)
+	}
+}
+
+func TestTokenRefreshOn401(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth2/token" {
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"access_token":  "new-token",
+				"refresh_token": "new-refresh",
+				"token_type":    "bearer",
+				"expires_in":    7200,
+			})
+			return
+		}
+		callCount++
+		if callCount == 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer new-token" {
+			t.Errorf("expected new token, got %s", r.Header.Get("Authorization"))
+		}
+		json.NewEncoder(w).Encode(ProjectData{
+			Project: Project{ID: "p1"},
+			Tasks:   []Task{{ID: "t1", ProjectID: "p1", Title: "Test"}},
+		})
+	}))
+	defer srv.Close()
+
+	c := NewClientWithRefresh(srv.URL, "expired-token", "refresh-token", "client-id", "client-secret")
+	tasks, err := c.ListTasks(context.Background(), "p1")
+	if err != nil {
+		t.Fatalf("ListTasks error: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Errorf("got %d tasks, want 1", len(tasks))
+	}
+}
+
+func TestNoRefreshWithoutCredentials(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	// Client without refresh token should just return the 401 error
+	c := NewClient(srv.URL, "expired-token")
+	_, err := c.ListTasks(context.Background(), "p1")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "401") {
+		t.Errorf("expected 401 error, got: %v", err)
 	}
 }

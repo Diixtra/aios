@@ -34,7 +34,15 @@ func main() {
 		"interval", cfg.PollInterval,
 	)
 
-	ttClient := ticktick.NewDefaultClient(cfg.TickTickAccessToken)
+	var ttClient *ticktick.Client
+	if cfg.TickTickRefreshToken != "" && cfg.TickTickClientID != "" && cfg.TickTickClientSecret != "" {
+		ttClient = ticktick.NewDefaultClientWithRefresh(
+			cfg.TickTickAccessToken, cfg.TickTickRefreshToken,
+			cfg.TickTickClientID, cfg.TickTickClientSecret,
+		)
+	} else {
+		ttClient = ticktick.NewDefaultClient(cfg.TickTickAccessToken)
+	}
 	ghClient := ghclient.NewClient(cfg.GitHubToken)
 
 	var store state.Store
