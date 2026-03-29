@@ -14,6 +14,7 @@ type Config struct {
 	TickTickRefreshToken string
 	TickTickProjectID    string
 	GitHubToken          string
+	GitHubWebhookSecret  string
 	GitHubRepos          []string
 	PollInterval         time.Duration
 	Namespace            string
@@ -27,6 +28,7 @@ func Load() (*Config, error) {
 		TickTickRefreshToken: os.Getenv("TICKTICK_REFRESH_TOKEN"),
 		TickTickProjectID:    os.Getenv("TICKTICK_PROJECT_ID"),
 		GitHubToken:          os.Getenv("GITHUB_TOKEN"),
+		GitHubWebhookSecret:  os.Getenv("GITHUB_WEBHOOK_SECRET"),
 		Namespace:            os.Getenv("AIOS_NAMESPACE"),
 	}
 
@@ -59,6 +61,9 @@ func Load() (*Config, error) {
 	}
 	if c.TickTickProjectID == "" {
 		return nil, fmt.Errorf("TICKTICK_PROJECT_ID is required")
+	}
+	if c.GitHubWebhookSecret == "" {
+		return nil, fmt.Errorf("GITHUB_WEBHOOK_SECRET is required")
 	}
 
 	return c, nil
