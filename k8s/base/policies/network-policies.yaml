@@ -108,3 +108,42 @@ spec:
     - ports:
         - port: 443
           protocol: TCP
+---
+# TickTick Sync: allow ingress from Traefik + egress to GitHub API and K8s API
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ticktick-sync-ingress-egress
+  namespace: aios
+  labels:
+    app.kubernetes.io/part-of: aios
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: aios-ticktick-sync
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: traefik
+      ports:
+        - port: 8080
+          protocol: TCP
+  egress:
+    # Allow DNS
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Allow HTTPS (GitHub API, TickTick API)
+    - ports:
+        - port: 443
+          protocol: TCP
+    # Allow k8s API server (ConfigMap state)
+    - ports:
+        - port: 6443
+          protocol: TCP
