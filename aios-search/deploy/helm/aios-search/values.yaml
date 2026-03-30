@@ -27,7 +27,9 @@ resources:
 
 vault:
   path: /data/vault
-  hostPath: ""
+  nfs:
+    server: ${TRUENAS_HOST}
+    path: /mnt/kaz.cloud/kozmox/k8/aios-vault
 
 env:
   COLLECTION_NAME: aios_vault
