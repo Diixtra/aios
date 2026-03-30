@@ -58,7 +58,7 @@ func (e *Engine) PollTickTick(ctx context.Context) error {
 
 	for _, task := range tasks {
 		if m := e.store.FindByTickTick(ctx, task.ProjectID, task.ID); m != nil {
-			if task.IsCompleted() {
+			if task.IsCompleted() && !m.Closed {
 				owner, repo, err := ghclient.ParseRepo(m.GitHubRepo)
 				if err != nil {
 					slog.Error("invalid repo in mapping", "repo", m.GitHubRepo, "error", err)
@@ -68,6 +68,9 @@ func (e *Engine) PollTickTick(ctx context.Context) error {
 					"repo", m.GitHubRepo, "issue", m.GitHubIssueNumber, "task", task.ID)
 				if err := e.gh.CloseIssue(ctx, owner, repo, m.GitHubIssueNumber); err != nil {
 					slog.Error("failed to close issue", "error", err)
+				} else {
+					m.Closed = true
+					e.store.AddMapping(ctx, *m)
 				}
 			}
 			continue
@@ -132,6 +135,9 @@ func (e *Engine) HandleIssueClosed(ctx context.Context, repo string, issueNumber
 	if err := e.tt.CompleteTask(ctx, m.TickTickProjectID, m.TickTickTaskID); err != nil {
 		return err
 	}
+
+	m.Closed = true
+	e.store.AddMapping(ctx, *m)
 
 	if err := e.store.Flush(ctx); err != nil {
 		slog.Error("state flush failed", "error", err)

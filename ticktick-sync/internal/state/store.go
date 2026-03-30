@@ -8,6 +8,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -21,6 +22,7 @@ type Mapping struct {
 	GitHubRepo        string    `json:"githubRepo"`
 	GitHubIssueNumber int       `json:"githubIssueNumber"`
 	LastSyncedAt      time.Time `json:"lastSyncedAt"`
+	Closed            bool      `json:"closed,omitempty"`
 }
 
 // Store persists sync state.
@@ -143,8 +145,11 @@ func NewConfigMapStore(client kubernetes.Interface, namespace string) *ConfigMap
 // Load reads state from the ConfigMap into memory.
 func (s *ConfigMapStore) Load(ctx context.Context) error {
 	cm, err := s.client.CoreV1().ConfigMaps(s.namespace).Get(ctx, configMapName, metav1.GetOptions{})
-	if err != nil {
+	if apierrors.IsNotFound(err) {
 		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("get configmap %s: %w", configMapName, err)
 	}
 
 	if data, ok := cm.Data["mappings"]; ok {
