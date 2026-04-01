@@ -43,7 +43,7 @@ spec:
         - port: 6443
           protocol: TCP
 ---
-# Webhook: allow ingress from Traefik
+# Webhook: allow ingress from Traefik and Paperless
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -114,7 +114,7 @@ spec:
       ports:
         - port: 8080
           protocol: TCP
-    # Allow K8s API (for RBAC/auth)
+    # Allow K8s API (for AgentTask CR creation)
     - ports:
         - port: 6443
           protocol: TCP

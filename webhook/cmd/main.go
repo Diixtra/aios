@@ -58,7 +58,9 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/webhook/github", ghHandler)
 
-	// Paperless webhook config (optional — only enabled if PAPERLESS_API_URL is set)
+	// Paperless webhook config — enabled when PAPERLESS_API_URL is set.
+	// In the standard K8s deployment this is always set; the guard exists for
+	// local development or alternative deployments without Paperless.
 	paperlessAPIURL := os.Getenv("PAPERLESS_API_URL")
 	if paperlessAPIURL != "" {
 		paperlessToken := os.Getenv("PAPERLESS_API_TOKEN")

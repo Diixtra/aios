@@ -3,16 +3,20 @@ package paperless
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Diixtra/aios/webhook/internal/document"
 	"github.com/Diixtra/aios/webhook/internal/localai"
 	"github.com/Diixtra/aios/webhook/internal/vault"
 )
+
+var searchClient = &http.Client{Timeout: 10 * time.Second}
 
 // Handler processes Paperless-ngx webhook events.
 type Handler struct {
@@ -53,8 +57,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate secret
-	if r.Header.Get("X-Paperless-Secret") != h.secret {
+	// Validate secret (constant-time comparison to prevent timing attacks)
+	if subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Paperless-Secret")), []byte(h.secret)) != 1 {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -140,7 +144,9 @@ func (h *Handler) applyTags(ctx context.Context, doc *document.Document, suggest
 		return fmt.Errorf("re-fetch document: %w", err)
 	}
 
-	allTagIDs := append(rawDoc.Tags, newTagIDs...)
+	allTagIDs := make([]int, 0, len(rawDoc.Tags)+len(newTagIDs))
+	allTagIDs = append(allTagIDs, rawDoc.Tags...)
+	allTagIDs = append(allTagIDs, newTagIDs...)
 	return h.paperlessClient.UpdateTags(ctx, doc.ID, allTagIDs)
 }
 
@@ -174,7 +180,7 @@ func (h *Handler) autoLink(ctx context.Context, doc *document.Document) (int, er
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := searchClient.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("search request: %w", err)
 	}

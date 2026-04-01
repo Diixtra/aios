@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/Diixtra/aios/webhook/internal/document"
@@ -90,7 +91,7 @@ func (c *Client) GetOrCreateTag(ctx context.Context, name string) (int, error) {
 			Name string `json:"name"`
 		} `json:"results"`
 	}
-	if err := c.get(ctx, fmt.Sprintf("/api/tags/?name__iexact=%s", name), &listResp); err != nil {
+	if err := c.get(ctx, "/api/tags/?"+url.Values{"name__iexact": {name}}.Encode(), &listResp); err != nil {
 		return 0, fmt.Errorf("search tag %q: %w", name, err)
 	}
 	if len(listResp.Results) > 0 {
