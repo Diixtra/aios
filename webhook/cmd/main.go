@@ -12,6 +12,7 @@ import (
 
 	gh "github.com/Diixtra/aios/webhook/internal/github"
 	k8sclient "github.com/Diixtra/aios/webhook/internal/k8s"
+	"github.com/Diixtra/aios/webhook/internal/paperless"
 )
 
 func main() {
@@ -56,6 +57,54 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/webhook/github", ghHandler)
+
+	// Paperless webhook config — enabled when PAPERLESS_API_URL is set.
+	// In the standard K8s deployment this is always set; the guard exists for
+	// local development or alternative deployments without Paperless.
+	paperlessAPIURL := os.Getenv("PAPERLESS_API_URL")
+	if paperlessAPIURL != "" {
+		paperlessToken := os.Getenv("PAPERLESS_API_TOKEN")
+		if paperlessToken == "" {
+			log.Fatal("PAPERLESS_API_TOKEN required when PAPERLESS_API_URL is set")
+		}
+		paperlessSecret := os.Getenv("PAPERLESS_WEBHOOK_SECRET")
+		if paperlessSecret == "" {
+			log.Fatal("PAPERLESS_WEBHOOK_SECRET required when PAPERLESS_API_URL is set")
+		}
+		paperlessDomain := os.Getenv("PAPERLESS_DOMAIN")
+		if paperlessDomain == "" {
+			log.Fatal("PAPERLESS_DOMAIN required when PAPERLESS_API_URL is set")
+		}
+		localaiURL := os.Getenv("LOCALAI_URL")
+		if localaiURL == "" {
+			log.Fatal("LOCALAI_URL required when PAPERLESS_API_URL is set")
+		}
+		localaiModel := os.Getenv("LOCALAI_MODEL")
+		if localaiModel == "" {
+			localaiModel = "phi-3-mini"
+		}
+		vaultPath := os.Getenv("VAULT_PATH")
+		if vaultPath == "" {
+			log.Fatal("VAULT_PATH required when PAPERLESS_API_URL is set")
+		}
+		searchURL := os.Getenv("AIOS_SEARCH_URL")
+		if searchURL == "" {
+			log.Fatal("AIOS_SEARCH_URL required when PAPERLESS_API_URL is set")
+		}
+
+		paperlessHandler := paperless.NewHandler(
+			paperlessSecret,
+			paperlessAPIURL,
+			paperlessToken,
+			paperlessDomain,
+			localaiURL,
+			localaiModel,
+			vaultPath,
+			searchURL,
+		)
+		mux.Handle("/webhook/paperless", paperlessHandler)
+		log.Printf("Paperless webhook enabled at /webhook/paperless")
+	}
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "ok")
