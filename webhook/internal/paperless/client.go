@@ -7,19 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"time"
-)
 
-// Document represents a Paperless-ngx document with resolved names.
-type Document struct {
-	ID            int       `json:"id"`
-	Title         string    `json:"title"`
-	Content       string    `json:"content"`
-	Correspondent string    `json:"correspondent"`
-	Tags          []string  `json:"tags"`
-	Created       time.Time `json:"created"`
-	Added         time.Time `json:"added"`
-	OriginalURL   string    `json:"original_url"`
-}
+	"github.com/Diixtra/aios/webhook/internal/document"
+)
 
 // Client talks to the Paperless-ngx REST API.
 type Client struct {
@@ -53,7 +43,7 @@ type apiDocumentResponse struct {
 }
 
 // GetDocument fetches a document by ID, resolving correspondent and tag names.
-func (c *Client) GetDocument(ctx context.Context, id int) (*Document, error) {
+func (c *Client) GetDocument(ctx context.Context, id int) (*document.Document, error) {
 	var apiDoc apiDocumentResponse
 	if err := c.get(ctx, fmt.Sprintf("/api/documents/%d/", id), &apiDoc); err != nil {
 		return nil, fmt.Errorf("fetch document %d: %w", id, err)
@@ -80,7 +70,7 @@ func (c *Client) GetDocument(ctx context.Context, id int) (*Document, error) {
 	created, _ := time.Parse(time.RFC3339, apiDoc.Created)
 	added, _ := time.Parse(time.RFC3339, apiDoc.Added)
 
-	return &Document{
+	return &document.Document{
 		ID:            apiDoc.ID,
 		Title:         apiDoc.Title,
 		Content:       apiDoc.Content,

@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/Diixtra/aios/webhook/internal/paperless"
+	"github.com/Diixtra/aios/webhook/internal/document"
 )
 
 func TestClient_ClassifyDocument(t *testing.T) {
@@ -36,7 +36,7 @@ func TestClient_ClassifyDocument(t *testing.T) {
 	defer server.Close()
 
 	c := NewClient(server.URL, "test-model")
-	doc := &paperless.Document{
+	doc := &document.Document{
 		Title:         "March 2026 Electricity Bill",
 		Correspondent: "British Gas",
 		Content:       "Your electricity bill for March 2026 is £142.50",
@@ -64,7 +64,7 @@ func TestClient_ClassifyDocument_InvalidJSON(t *testing.T) {
 	defer server.Close()
 
 	c := NewClient(server.URL, "test-model")
-	doc := &paperless.Document{Title: "Test", Content: "test"}
+	doc := &document.Document{Title: "Test", Content: "test"}
 
 	_, err := c.ClassifyDocument(context.Background(), doc)
 	if err == nil {
@@ -90,7 +90,7 @@ func TestClient_ClassifyDocument_ContentTruncation(t *testing.T) {
 	for i := range longContent {
 		longContent[i] = 'a'
 	}
-	doc := &paperless.Document{Title: "Test", Content: string(longContent)}
+	doc := &document.Document{Title: "Test", Content: string(longContent)}
 
 	_, err := c.ClassifyDocument(context.Background(), doc)
 	if err != nil {

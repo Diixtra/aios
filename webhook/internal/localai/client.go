@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Diixtra/aios/webhook/internal/paperless"
+	"github.com/Diixtra/aios/webhook/internal/document"
 )
 
 const maxContentChars = 2000
@@ -52,7 +52,7 @@ type chatChoice struct {
 }
 
 // ClassifyDocument returns suggested tags for a document.
-func (c *Client) ClassifyDocument(ctx context.Context, doc *paperless.Document) ([]string, error) {
+func (c *Client) ClassifyDocument(ctx context.Context, doc *document.Document) ([]string, error) {
 	content := doc.Content
 	if len(content) > maxContentChars {
 		content = content[:maxContentChars]

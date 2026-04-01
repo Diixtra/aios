@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Diixtra/aios/webhook/internal/paperless"
+	"github.com/Diixtra/aios/webhook/internal/document"
 )
 
 func TestWriter_WriteStub(t *testing.T) {
 	tmpDir := t.TempDir()
 	w := NewWriter(tmpDir)
 
-	doc := &paperless.Document{
+	doc := &document.Document{
 		ID:            42,
 		Title:         "Self Assessment Tax Return 2024-25",
 		Content:       "Dear Mr. Sherlock, your tax return...",
@@ -71,7 +71,7 @@ func TestWriter_WriteStub_NoCorrespondent(t *testing.T) {
 	tmpDir := t.TempDir()
 	w := NewWriter(tmpDir)
 
-	doc := &paperless.Document{
+	doc := &document.Document{
 		ID:          99,
 		Title:       "Unknown Document",
 		Content:     "Some content",
@@ -96,7 +96,7 @@ func TestWriter_WriteStub_Idempotent(t *testing.T) {
 	tmpDir := t.TempDir()
 	w := NewWriter(tmpDir)
 
-	doc := &paperless.Document{
+	doc := &document.Document{
 		ID:          42,
 		Title:       "Test Doc",
 		Content:     "Version 1",

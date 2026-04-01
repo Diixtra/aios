@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Diixtra/aios/webhook/internal/paperless"
+	"github.com/Diixtra/aios/webhook/internal/document"
 )
 
 // Writer creates and updates stub notes in the Obsidian vault.
@@ -24,7 +24,7 @@ func NewWriter(vaultPath string) *Writer {
 // WriteStub creates a stub markdown note for a Paperless document.
 // Returns the absolute path of the written file.
 // If a stub already exists for the same document, it is overwritten.
-func (w *Writer) WriteStub(doc *paperless.Document) (string, error) {
+func (w *Writer) WriteStub(doc *document.Document) (string, error) {
 	correspondent := doc.Correspondent
 	if correspondent == "" {
 		correspondent = "Uncategorised"
