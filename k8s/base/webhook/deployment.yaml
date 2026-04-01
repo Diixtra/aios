@@ -31,6 +31,31 @@ spec:
                 secretKeyRef:
                   name: aios-github-app
                   key: webhook-secret
+            - name: PAPERLESS_API_URL
+              value: "http://paperless-paperless-ngx.paperless.svc:8000"
+            - name: PAPERLESS_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aios-paperless-api
+                  key: api-token
+            - name: PAPERLESS_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: aios-paperless-api
+                  key: webhook-secret
+            - name: PAPERLESS_DOMAIN
+              value: "https://paperless.lab.kazie.co.uk"
+            - name: LOCALAI_URL
+              value: "http://local-ai.local-ai.svc:8080"
+            - name: LOCALAI_MODEL
+              value: "phi-3-mini"
+            - name: VAULT_PATH
+              value: "/vault"
+            - name: AIOS_SEARCH_URL
+              value: "http://aios-search.aios.svc:8080"
+          volumeMounts:
+            - name: vault
+              mountPath: /vault
           livenessProbe:
             httpGet:
               path: /healthz
@@ -49,7 +74,7 @@ spec:
               memory: 64Mi
             limits:
               cpu: 200m
-              memory: 128Mi
+              memory: 256Mi
           securityContext:
             runAsNonRoot: true
             runAsUser: 65532
@@ -60,3 +85,8 @@ spec:
             capabilities:
               drop:
                 - ALL
+      volumes:
+        - name: vault
+          hostPath:
+            path: /mnt/syncthing/obsidian-vault
+            type: Directory

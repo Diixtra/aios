@@ -10,6 +10,7 @@ resources:
   - secrets/claude-api-key.yaml
   - secrets/github-app.yaml
   - secrets/slack-app.yaml
+  - secrets/paperless-api.yaml
 
   # Operator
   - operator/service-account.yaml
