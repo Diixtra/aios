@@ -4,6 +4,7 @@ go 1.26.1
 
 require (
 	github.com/google/go-github/v63 v63.0.0
+	github.com/google/go-github/v84 v84.0.0
 	golang.org/x/oauth2 v0.36.0
 	k8s.io/api v0.35.3
 	k8s.io/apimachinery v0.35.3
@@ -22,7 +23,7 @@ require (
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/gnostic-models v0.7.0 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
-	github.com/google/go-querystring v1.1.0 // indirect
+	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/google/gofuzz v1.2.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
