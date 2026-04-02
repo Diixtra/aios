@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/google/go-github/v63/github"
+	"github.com/google/go-github/v84/github"
 	"golang.org/x/oauth2"
 )
 
@@ -116,7 +116,7 @@ func (s *realIssueService) ListByLabel(ctx context.Context, owner, repo, label s
 		if resp.NextPage == 0 {
 			break
 		}
-		opts.Page = resp.NextPage
+		opts.ListOptions.Page = resp.NextPage
 	}
 	return result, nil
 }
