@@ -4,9 +4,9 @@ import { SlackNotifier } from "./slack.js";
 const mockPostMessage = vi.fn();
 
 vi.mock("@slack/web-api", () => ({
-  WebClient: vi.fn().mockImplementation(() => ({
-    chat: { postMessage: mockPostMessage },
-  })),
+  WebClient: vi.fn().mockImplementation(function () {
+    return { chat: { postMessage: mockPostMessage } };
+  }),
 }));
 
 describe("SlackNotifier", () => {

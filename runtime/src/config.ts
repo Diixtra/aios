@@ -36,6 +36,10 @@ export function loadTaskConfig(): TaskConfig {
     memoryUrl: optional("AIOS_MEMORY_URL") ?? "",
     searchUrl: optional("AIOS_SEARCH_URL") ?? "",
     workspace: optional("AIOS_WORKSPACE") ?? "/workspace",
+    model: optional("AIOS_CLAUDE_MODEL") ?? "claude-sonnet-4-6",
+    maxTokens: process.env.AIOS_CLAUDE_MAX_TOKENS
+      ? parseInt(process.env.AIOS_CLAUDE_MAX_TOKENS, 10)
+      : 16384,
   };
 }
 

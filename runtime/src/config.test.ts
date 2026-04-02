@@ -88,6 +88,24 @@ describe("loadTaskConfig", () => {
     delete process.env.AIOS_REPO;
     expect(() => loadTaskConfig()).toThrow("Missing required environment variable: AIOS_REPO");
   });
+
+  it("loads model and maxTokens from env", () => {
+    process.env.AIOS_CLAUDE_MODEL = "claude-haiku-4-5-20251001";
+    process.env.AIOS_CLAUDE_MAX_TOKENS = "32768";
+
+    const config = loadTaskConfig();
+    expect(config.model).toBe("claude-haiku-4-5-20251001");
+    expect(config.maxTokens).toBe(32768);
+  });
+
+  it("uses defaults for model and maxTokens when not set", () => {
+    delete process.env.AIOS_CLAUDE_MODEL;
+    delete process.env.AIOS_CLAUDE_MAX_TOKENS;
+
+    const config = loadTaskConfig();
+    expect(config.model).toBe("claude-sonnet-4-6");
+    expect(config.maxTokens).toBe(16384);
+  });
 });
 
 describe("loadToolPolicy", () => {

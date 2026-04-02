@@ -24,6 +24,10 @@ export interface TaskConfig {
   searchUrl: string;
   /** Workspace directory for file operations */
   workspace: string;
+  /** Claude model to use (default: claude-sonnet-4-6) */
+  model: string;
+  /** Max tokens for Claude responses (default: 16384) */
+  maxTokens: number;
 }
 
 /**

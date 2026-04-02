@@ -32,10 +32,10 @@ const mockSlack = {
   postEscalation: vi.fn().mockResolvedValue(undefined),
 };
 
-vi.mocked(SlackNotifier).mockImplementation(() => mockSlack as any);
-vi.mocked(FabricRunner).mockImplementation(() => ({}) as any);
-vi.mocked(GitHubClient).mockImplementation(() => ({}) as any);
-vi.mocked(MemoryClient).mockImplementation(() => ({}) as any);
+vi.mocked(SlackNotifier).mockImplementation(function () { return mockSlack as any; });
+vi.mocked(FabricRunner).mockImplementation(function () { return {} as any; });
+vi.mocked(GitHubClient).mockImplementation(function () { return {} as any; });
+vi.mocked(MemoryClient).mockImplementation(function () { return {} as any; });
 
 const baseConfig: TaskConfig = {
   taskId: "task-1",
@@ -47,6 +47,8 @@ const baseConfig: TaskConfig = {
   memoryUrl: "http://memory:8080",
   searchUrl: "http://search:8080",
   workspace: "/workspace",
+  model: "claude-sonnet-4-6",
+  maxTokens: 16384,
 };
 
 const toolPolicy: ToolPolicy = {
