@@ -98,6 +98,21 @@ describe("loadTaskConfig", () => {
     expect(config.maxTokens).toBe(32768);
   });
 
+  it("falls back to default maxTokens for non-numeric value", () => {
+    process.env.AIOS_CLAUDE_MAX_TOKENS = "abc";
+
+    const config = loadTaskConfig();
+    expect(config.maxTokens).toBe(16384);
+  });
+
+  it("falls back to default maxTokens for zero or negative value", () => {
+    process.env.AIOS_CLAUDE_MAX_TOKENS = "0";
+    expect(loadTaskConfig().maxTokens).toBe(16384);
+
+    process.env.AIOS_CLAUDE_MAX_TOKENS = "-100";
+    expect(loadTaskConfig().maxTokens).toBe(16384);
+  });
+
   it("uses defaults for model and maxTokens when not set", () => {
     delete process.env.AIOS_CLAUDE_MODEL;
     delete process.env.AIOS_CLAUDE_MAX_TOKENS;

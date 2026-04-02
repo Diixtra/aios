@@ -101,10 +101,6 @@ async function executeShell(
 
   const result = await sandboxedExec(sandbox, command, args, workspace);
 
-  if (result.exitCode === 126) {
-    return { content: result.stderr, is_error: true };
-  }
-
   const output = [
     `Exit code: ${result.exitCode}`,
     result.stdout ? `stdout:\n${result.stdout}` : "",
@@ -113,7 +109,7 @@ async function executeShell(
     .filter(Boolean)
     .join("\n");
 
-  return { content: output };
+  return { content: output, is_error: result.exitCode !== 0 ? true : undefined };
 }
 
 async function executeReadFile(

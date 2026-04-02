@@ -44,6 +44,24 @@ describe("executeTool", () => {
     expect(result).toHaveProperty("content");
   });
 
+  it("sets is_error for non-zero exit codes", async () => {
+    // "ls " is in the allow list, so this will run but may fail
+    const result = await executeTool(
+      {
+        type: "tool_use",
+        id: "tool-1b",
+        name: "shell",
+        input: { command: "ls", args: ["/nonexistent_path_xyz"] },
+      },
+      sandbox,
+      "/workspace",
+    );
+
+    // ls on a non-existent path exits non-zero
+    expect(result.is_error).toBe(true);
+    expect(result.content).toContain("Exit code:");
+  });
+
   it("returns error for blocked shell command", async () => {
     const result = await executeTool(
       {

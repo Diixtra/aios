@@ -105,7 +105,8 @@ export async function runImplement(
       });
     }
 
-    if (turns >= MAX_TURNS) {
+    // Check if loop exited because of turn limit while agent still wanted tools
+    if (response.stop_reason === "tool_use") {
       await slack.postToThread(
         config.slackChannel,
         threadTs,
@@ -117,14 +118,16 @@ export async function runImplement(
       };
     }
 
-    // Stage and commit changes
-    await sandboxedExec(sandbox, "git", ["add", "-A"], config.workspace);
-    await sandboxedExec(
-      sandbox,
-      "git",
-      ["commit", "-m", `aios: implement ${config.taskId}`],
-      config.workspace,
-    );
+    // Stage any unstaged changes and commit
+    const commitResult = await stageAndCommit(sandbox, config);
+    if (!commitResult.committed && commitResult.error) {
+      await slack.postToThread(
+        config.slackChannel,
+        threadTs,
+        `:x: Git commit failed: ${commitResult.error}`,
+      );
+      return { success: false, summary: `Git commit failed: ${commitResult.error}` };
+    }
 
     const summary = extractSummary(response);
 
@@ -146,6 +149,42 @@ export async function runImplement(
   }
 }
 
+interface CommitOutcome {
+  committed: boolean;
+  error?: string;
+}
+
+async function stageAndCommit(
+  sandbox: Sandbox,
+  config: TaskConfig,
+): Promise<CommitOutcome> {
+  const addResult = await sandboxedExec(sandbox, "git", ["add", "-A"], config.workspace);
+  if (addResult.exitCode !== 0) {
+    return { committed: false, error: addResult.stderr || `git add failed (exit ${addResult.exitCode})` };
+  }
+
+  // Check if there's anything to commit (avoids empty commits)
+  const diffResult = await sandboxedExec(sandbox, "git", ["diff", "--cached", "--quiet"], config.workspace);
+  if (diffResult.exitCode === 0) {
+    // No staged changes — agent may have already committed, or made no file changes
+    return { committed: false };
+  }
+
+  // Use a safe commit message that avoids metacharacters from taskId
+  const safeTaskId = config.taskId.replace(/[^a-zA-Z0-9_\-. ]/g, "_");
+  const commitResult = await sandboxedExec(
+    sandbox,
+    "git",
+    ["commit", "-m", `aios: implement ${safeTaskId}`],
+    config.workspace,
+  );
+  if (commitResult.exitCode !== 0) {
+    return { committed: false, error: commitResult.stderr || `git commit failed (exit ${commitResult.exitCode})` };
+  }
+
+  return { committed: true };
+}
+
 function buildSystemPrompt(config: TaskConfig): string {
   return `You are a coding agent. Implement the plan provided by the user.
 
@@ -158,6 +197,7 @@ Rules:
 - Follow existing code patterns and conventions
 - Make small, focused changes
 - If a command is blocked by the sandbox, find an alternative approach
+- Do NOT run git add or git commit — staging and committing is handled automatically after you finish
 
 You have three tools: shell (run commands), read_file, and write_file.`;
 }

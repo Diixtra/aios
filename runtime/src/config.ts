@@ -37,10 +37,14 @@ export function loadTaskConfig(): TaskConfig {
     searchUrl: optional("AIOS_SEARCH_URL") ?? "",
     workspace: optional("AIOS_WORKSPACE") ?? "/workspace",
     model: optional("AIOS_CLAUDE_MODEL") ?? "claude-sonnet-4-6",
-    maxTokens: process.env.AIOS_CLAUDE_MAX_TOKENS
-      ? parseInt(process.env.AIOS_CLAUDE_MAX_TOKENS, 10)
-      : 16384,
+    maxTokens: parseMaxTokens(process.env.AIOS_CLAUDE_MAX_TOKENS),
   };
+}
+
+function parseMaxTokens(value: string | undefined): number {
+  if (!value) return 16384;
+  const parsed = parseInt(value, 10);
+  return Number.isNaN(parsed) || parsed <= 0 ? 16384 : parsed;
 }
 
 /**
