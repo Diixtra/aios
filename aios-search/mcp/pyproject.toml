@@ -2,7 +2,7 @@
 name = "aios-search-mcp"
 version = "0.1.0"
 description = "MCP server for AIOS semantic search"
-requires-python = "==3.14.3"
+requires-python = "==3.14.4"
 dependencies = [
     "mcp[cli]==1.27.0",
     "httpx==0.28.1",
