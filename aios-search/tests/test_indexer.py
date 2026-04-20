@@ -153,7 +153,7 @@ def test_upsert_is_idempotent(indexer):
 def test_upsert_updates_existing_row(indexer):
     indexer.upsert_chunks([_chunk("notes/a.md", 0, "Original", title="A")])
     indexer.upsert_chunks([_chunk("notes/a.md", 0, "Revised", title="A-rev")])
-    with psycopg.connect(indexer._pool.conninfo) as conn, conn.cursor() as cur:
+    with psycopg.connect(indexer._database_url) as conn, conn.cursor() as cur:
         cur.execute(
             f"SELECT title, content FROM {TABLE} WHERE source_path = 'notes/a.md'"
         )

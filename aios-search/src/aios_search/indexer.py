@@ -3,6 +3,7 @@ import threading
 from datetime import datetime, timezone
 from typing import Any
 
+import psycopg
 from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
@@ -34,23 +35,22 @@ class Indexer:
         embedder,
         batch_size: int = 100,
     ):
-        self._pool = ConnectionPool(
-            conninfo=database_url,
-            min_size=1,
-            max_size=5,
-            configure=_register_pgvector,
-            open=False,
-        )
+        self._database_url = database_url
+        self._pool: ConnectionPool | None = None
         self._embedder = embedder
         self._batch_size = batch_size
         self.last_indexed_at: datetime | None = None
         self._stats_lock = threading.Lock()
 
     def ensure_collection(self) -> None:
-        """Open the pool and verify Atlas has applied the schema."""
-        if self._pool.closed:
-            self._pool.open()
-        with self._pool.connection() as conn, conn.cursor() as cur:
+        """Validate Atlas schema, then open the connection pool.
+
+        We check for the ``vector`` extension and the target table using a
+        one-shot psycopg.connect so the pool's pgvector adapter (which
+        queries ``pg_type`` for the vector OID) does not deadlock against a
+        missing extension.
+        """
+        with psycopg.connect(self._database_url) as conn, conn.cursor() as cur:
             cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
             if cur.fetchone() is None:
                 raise RuntimeError(
@@ -65,9 +65,25 @@ class Indexer:
                 raise RuntimeError(
                     f"table {TABLE} missing; Atlas schema has not been applied"
                 )
+        self._pool = ConnectionPool(
+            conninfo=self._database_url,
+            min_size=1,
+            max_size=5,
+            configure=_register_pgvector,
+            open=True,
+        )
 
     def close(self) -> None:
-        self._pool.close()
+        if self._pool is not None:
+            self._pool.close()
+            self._pool = None
+
+    def _require_pool(self) -> ConnectionPool:
+        if self._pool is None:
+            raise RuntimeError(
+                "Indexer pool not opened; call ensure_collection() first"
+            )
+        return self._pool
 
     def upsert_chunks(self, chunks: list[NoteChunk]) -> None:
         if not chunks:
@@ -105,7 +121,7 @@ class Indexer:
             "embedding = EXCLUDED.embedding, "
             "updated_at = now()"
         )
-        with self._pool.connection() as conn, conn.cursor() as cur:
+        with self._require_pool().connection() as conn, conn.cursor() as cur:
             for i in range(0, len(rows), self._batch_size):
                 cur.executemany(sql, rows[i : i + self._batch_size])
         with self._stats_lock:
@@ -113,7 +129,7 @@ class Indexer:
         logger.info("Upserted %d chunks for %s", len(chunks), chunks[0].file_path)
 
     def delete_by_file_path(self, file_path: str) -> None:
-        with self._pool.connection() as conn, conn.cursor() as cur:
+        with self._require_pool().connection() as conn, conn.cursor() as cur:
             cur.execute(
                 f"DELETE FROM {TABLE} WHERE source_path = %s",
                 (file_path,),
@@ -141,7 +157,7 @@ class Indexer:
             "ORDER BY embedding <=> %s::vector "
             "LIMIT %s"
         )
-        with self._pool.connection() as conn, conn.cursor() as cur:
+        with self._require_pool().connection() as conn, conn.cursor() as cur:
             cur.execute(sql, params)
             rows = cur.fetchall()
         results = [
@@ -158,7 +174,7 @@ class Indexer:
         min_score: float = 0.3,
         filters: dict | None = None,
     ) -> list[dict] | None:
-        with self._pool.connection() as conn, conn.cursor() as cur:
+        with self._require_pool().connection() as conn, conn.cursor() as cur:
             cur.execute(
                 f"SELECT embedding FROM {TABLE} "
                 "WHERE source_path = %s AND chunk_index = 0",
@@ -195,14 +211,14 @@ class Indexer:
         return results[:limit]
 
     def get_indexed_files(self) -> dict[str, str]:
-        with self._pool.connection() as conn, conn.cursor() as cur:
+        with self._require_pool().connection() as conn, conn.cursor() as cur:
             cur.execute(
                 f"SELECT source_path, content_hash FROM {TABLE} WHERE chunk_index = 0"
             )
             return {row[0]: row[1] for row in cur.fetchall()}
 
     def get_stats(self) -> dict:
-        with self._pool.connection() as conn, conn.cursor() as cur:
+        with self._require_pool().connection() as conn, conn.cursor() as cur:
             cur.execute(f"SELECT count(*) FROM {TABLE}")
             (total,) = cur.fetchone()
         return {
