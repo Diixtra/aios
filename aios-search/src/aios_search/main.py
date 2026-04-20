@@ -26,12 +26,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         model_name=settings.embedding_model,
     )
     indexer = Indexer(
-        qdrant_url=settings.qdrant_url,
-        qdrant_api_key=settings.qdrant_api_key,
-        collection_name=settings.collection_name,
-        vector_size=settings.vector_size,
+        database_url=settings.database_url,
         embedder=embedder,
-        qdrant_batch_size=settings.qdrant_batch_size,
+        batch_size=settings.upsert_batch_size,
     )
     watcher = Watcher(settings=settings, indexer=indexer)
 
@@ -45,6 +42,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         yield
         logger.info("Shutting down...")
         watcher.stop()
+        indexer.close()
 
     app = FastAPI(title="AIOS Search", version="0.1.0", lifespan=lifespan)
     router = create_router(

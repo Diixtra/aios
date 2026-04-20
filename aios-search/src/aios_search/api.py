@@ -43,7 +43,7 @@ def create_router(
                 filters=req.filters,
             )
         except Exception:
-            logger.exception("Search failed — Qdrant unavailable")
+            logger.exception("Search failed — vector database unavailable")
             return JSONResponse(
                 status_code=503,
                 content={"error": "Vector database unavailable"},
@@ -59,7 +59,7 @@ def create_router(
                 filters=req.filters,
             )
         except Exception:
-            logger.exception("Similar search failed — Qdrant unavailable")
+            logger.exception("Similar search failed — vector database unavailable")
             return JSONResponse(
                 status_code=503,
                 content={"error": "Vector database unavailable"},
