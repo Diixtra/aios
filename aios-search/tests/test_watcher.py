@@ -41,7 +41,7 @@ def test_process_file_calls_indexer(watcher, mock_indexer, tmp_vault):
 
 
 def test_process_file_adds_to_retry_on_failure(watcher, mock_indexer, tmp_vault):
-    mock_indexer.upsert_chunks.side_effect = Exception("Qdrant down")
+    mock_indexer.upsert_chunks.side_effect = Exception("database unavailable")
     path = tmp_vault / "12-CRM" / "Contacts" / "Shah Ali.md"
     watcher._process_file(path)
     assert "12-CRM/Contacts/Shah Ali.md" in watcher._retry_set

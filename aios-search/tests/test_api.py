@@ -137,7 +137,7 @@ def test_reindex(client, mock_indexer):
     assert resp.json()["status"] == "reindex_started"
 
 
-def test_search_qdrant_unavailable(client, mock_indexer):
+def test_search_vector_db_unavailable(client, mock_indexer):
     mock_indexer.search.side_effect = Exception("Connection refused")
     resp = client.post(
         "/search",
@@ -148,7 +148,7 @@ def test_search_qdrant_unavailable(client, mock_indexer):
     assert resp.json()["error"] == "Vector database unavailable"
 
 
-def test_similar_qdrant_unavailable(client, mock_indexer):
+def test_similar_vector_db_unavailable(client, mock_indexer):
     mock_indexer.find_similar.side_effect = Exception("Connection refused")
     resp = client.post(
         "/similar",

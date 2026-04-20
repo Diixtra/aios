@@ -1,232 +1,259 @@
-import uuid
-from unittest.mock import MagicMock, patch
+"""Integration tests for the pgvector Indexer.
+
+We stand up a real pgvector/pgvector:pg18 testcontainer and apply the
+production schema.sql once per session. Each test runs in a transaction
+that is rolled back so assertions stay isolated.
+"""
+import os
 
 import numpy as np
+import psycopg
 import pytest
+from testcontainers.postgres import PostgresContainer
 
-from aios_search.indexer import Indexer
+from aios_search.indexer import TABLE, Indexer
 from aios_search.parser import NoteChunk
 
 
-@pytest.fixture
-def mock_qdrant():
-    with patch("aios_search.indexer.QdrantClient") as mock_cls:
-        client = MagicMock()
-        mock_cls.return_value = client
-        yield client
+PGVECTOR_IMAGE = os.getenv("TEST_PGVECTOR_IMAGE", "pgvector/pgvector:pg18")
+
+SCHEMA_SQL = """
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS aios_vault_embeddings (
+  id            bigserial   PRIMARY KEY,
+  source_path   text        NOT NULL,
+  chunk_index   int         NOT NULL,
+  chunk_total   int         NOT NULL,
+  title         text        NOT NULL,
+  content       text        NOT NULL,
+  content_hash  text        NOT NULL,
+  metadata      jsonb       NOT NULL DEFAULT '{}'::jsonb,
+  embedding     vector(384) NOT NULL,
+  updated_at    timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (source_path, chunk_index)
+);
+
+CREATE INDEX IF NOT EXISTS aios_vault_embeddings_hnsw_cosine
+  ON aios_vault_embeddings USING hnsw (embedding vector_cosine_ops);
+
+CREATE INDEX IF NOT EXISTS aios_vault_embeddings_source_path
+  ON aios_vault_embeddings (source_path);
+
+CREATE INDEX IF NOT EXISTS aios_vault_embeddings_metadata_gin
+  ON aios_vault_embeddings USING GIN (metadata);
+"""
+
+
+@pytest.fixture(scope="session")
+def pg_container():
+    with PostgresContainer(PGVECTOR_IMAGE, driver=None) as pg:
+        url = pg.get_connection_url()
+        # testcontainers prepends "postgresql+psycopg2"; strip that.
+        dsn = url.replace("postgresql+psycopg2://", "postgresql://")
+        with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
+            cur.execute(SCHEMA_SQL)
+        yield dsn
 
 
 @pytest.fixture
-def mock_embedder():
-    embedder = MagicMock()
-    embedder.embed.return_value = [np.random.rand(384).astype(np.float32)]
-    return embedder
+def clean_db(pg_container):
+    dsn = pg_container
+    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute(f"TRUNCATE {TABLE}")
+    return dsn
+
+
+class _DeterministicEmbedder:
+    """Embedder stub: returns a unit-ish 384-dim vector derived from each input."""
+
+    def embed(self, texts):
+        results = []
+        for t in texts:
+            vec = np.zeros(384, dtype=np.float32)
+            # Hash each char to spread signal across dimensions.
+            for i, ch in enumerate(t[:64]):
+                vec[i % 384] = (ord(ch) % 97) / 97.0
+            results.append(vec)
+        return results
+
+
+def _chunk(
+    file_path: str,
+    chunk_index: int,
+    content: str,
+    title: str = "Title",
+    metadata: dict | None = None,
+) -> NoteChunk:
+    return NoteChunk(
+        file_path=file_path,
+        title=title,
+        metadata=metadata or {},
+        content=content,
+        content_hash=f"hash-{file_path}-{chunk_index}",
+        chunk_index=chunk_index,
+        chunk_total=1,
+    )
 
 
 @pytest.fixture
-def sample_chunks():
-    return [
-        NoteChunk(
-            file_path="12-CRM/Contacts/Shah Ali.md",
-            title="Shah Ali",
-            metadata={"type": "contact", "entity": ["properties"], "status": "active"},
-            content="Title: Shah Ali. Type: contact.\n\nProperty sourcing agent.",
-            content_hash="abc123",
-            chunk_index=0,
-            chunk_total=1,
-        )
+def indexer(clean_db):
+    idx = Indexer(
+        database_url=clean_db,
+        embedder=_DeterministicEmbedder(),
+        batch_size=50,
+    )
+    idx.ensure_collection()
+    yield idx
+    idx.close()
+
+
+def test_ensure_collection_raises_when_table_missing(pg_container):
+    # Point at a database without the schema applied.
+    dsn = pg_container
+    with psycopg.connect(dsn, autocommit=True) as conn, conn.cursor() as cur:
+        cur.execute("CREATE DATABASE empty_db")
+    empty_dsn = dsn.rsplit("/", 1)[0] + "/empty_db"
+    idx = Indexer(database_url=empty_dsn, embedder=_DeterministicEmbedder())
+    try:
+        with pytest.raises(RuntimeError, match="Atlas schema has not been applied"):
+            idx.ensure_collection()
+    finally:
+        idx.close()
+
+
+def test_upsert_and_search_roundtrip(indexer):
+    chunks = [
+        _chunk("20-Meetings/idox.md", 0, "IDOX migration discussion", title="IDOX Meeting",
+               metadata={"type": "meeting", "entity": ["diixtra"], "status": "done"}),
+        _chunk("10-Projects/website.md", 0, "New marketing website project", title="Website",
+               metadata={"type": "project", "entity": ["kazie"], "status": "active"}),
     ]
+    indexer.upsert_chunks(chunks)
+
+    results = indexer.search("IDOX migration", limit=5, min_score=0.0)
+    assert results, "search must return at least one hit"
+    assert results[0]["file_path"] == "20-Meetings/idox.md"
+    assert results[0]["title"] == "IDOX Meeting"
+    assert results[0]["type"] == "meeting"
+    assert results[0]["entity"] == ["diixtra"]
+    assert results[0]["status"] == "done"
+    assert results[0]["chunk_index"] == 0
+    assert results[0]["snippet"].startswith("IDOX migration")
 
 
-def test_indexer_ensure_collection(mock_qdrant, mock_embedder):
-    mock_qdrant.collection_exists.return_value = False
-    indexer = Indexer(
-        qdrant_url="http://localhost:6333",
-        qdrant_api_key="test",
-        collection_name="test_coll",
-        vector_size=384,
-        embedder=mock_embedder,
-    )
-    indexer.ensure_collection()
-    mock_qdrant.create_collection.assert_called_once()
+def test_upsert_is_idempotent(indexer):
+    chunk = _chunk("notes/a.md", 0, "Some content", title="A")
+    indexer.upsert_chunks([chunk])
+    indexer.upsert_chunks([chunk])
+    stats = indexer.get_stats()
+    assert stats["total_points"] == 1
 
 
-def test_indexer_upsert_chunks(mock_qdrant, mock_embedder, sample_chunks):
-    mock_embedder.embed.return_value = [np.random.rand(384).astype(np.float32)]
-    indexer = Indexer(
-        qdrant_url="http://localhost:6333",
-        qdrant_api_key="test",
-        collection_name="test_coll",
-        vector_size=384,
-        embedder=mock_embedder,
-    )
-    indexer.upsert_chunks(sample_chunks)
-    mock_embedder.embed.assert_called_once()
-    mock_qdrant.upsert.assert_called_once()
+def test_upsert_updates_existing_row(indexer):
+    indexer.upsert_chunks([_chunk("notes/a.md", 0, "Original", title="A")])
+    indexer.upsert_chunks([_chunk("notes/a.md", 0, "Revised", title="A-rev")])
+    with psycopg.connect(indexer._database_url) as conn, conn.cursor() as cur:
+        cur.execute(
+            f"SELECT title, content FROM {TABLE} WHERE source_path = 'notes/a.md'"
+        )
+        title, content = cur.fetchone()
+    assert title == "A-rev"
+    assert content == "Revised"
 
 
-def test_indexer_delete_by_file_path(mock_qdrant, mock_embedder):
-    indexer = Indexer(
-        qdrant_url="http://localhost:6333",
-        qdrant_api_key="test",
-        collection_name="test_coll",
-        vector_size=384,
-        embedder=mock_embedder,
-    )
-    indexer.delete_by_file_path("12-CRM/Contacts/Shah Ali.md")
-    mock_qdrant.delete.assert_called_once()
+def test_delete_by_file_path(indexer):
+    indexer.upsert_chunks([
+        _chunk("a.md", 0, "Alpha"),
+        _chunk("b.md", 0, "Bravo"),
+    ])
+    indexer.delete_by_file_path("a.md")
+    assert indexer.get_stats()["total_points"] == 1
+    files = indexer.get_indexed_files()
+    assert "b.md" in files
+    assert "a.md" not in files
 
 
-def test_indexer_search(mock_qdrant, mock_embedder):
-    mock_qdrant.query_points.return_value = MagicMock(points=[])
-    mock_embedder.embed.return_value = [np.random.rand(384).astype(np.float32)]
-    indexer = Indexer(
-        qdrant_url="http://localhost:6333",
-        qdrant_api_key="test",
-        collection_name="test_coll",
-        vector_size=384,
-        embedder=mock_embedder,
-    )
-    results = indexer.search("test query", limit=5, min_score=0.3)
-    mock_embedder.embed.assert_called_once_with(["test query"])
-    mock_qdrant.query_points.assert_called_once()
+def test_get_indexed_files_returns_hashes(indexer):
+    indexer.upsert_chunks([
+        _chunk("a.md", 0, "Alpha"),
+        _chunk("b.md", 0, "Bravo"),
+    ])
+    files = indexer.get_indexed_files()
+    assert files == {"a.md": "hash-a.md-0", "b.md": "hash-b.md-0"}
 
 
-def test_indexer_point_id_is_deterministic(mock_qdrant, mock_embedder):
-    from aios_search.indexer import make_point_id
-    id1 = make_point_id("12-CRM/Contacts/Shah Ali.md", 0)
-    id2 = make_point_id("12-CRM/Contacts/Shah Ali.md", 0)
-    id3 = make_point_id("12-CRM/Contacts/Shah Ali.md", 1)
-    assert id1 == id2
-    assert id1 != id3
-    assert isinstance(id1, str)
-    uuid.UUID(id1)
-
-
-def test_indexer_get_indexed_file_paths(mock_qdrant, mock_embedder):
-    mock_qdrant.scroll.return_value = (
-        [
-            MagicMock(payload={"file_path": "a.md", "content_hash": "h1"}),
-            MagicMock(payload={"file_path": "b.md", "content_hash": "h2"}),
-        ],
-        None,
-    )
-    indexer = Indexer(
-        qdrant_url="http://localhost:6333",
-        qdrant_api_key="test",
-        collection_name="test_coll",
-        vector_size=384,
-        embedder=mock_embedder,
-    )
-    result = indexer.get_indexed_files()
-    assert result == {"a.md": "h1", "b.md": "h2"}
-
-
-def test_indexer_search_with_filters(mock_qdrant, mock_embedder):
-    mock_point = MagicMock()
-    mock_point.score = 0.85
-    mock_point.payload = {
-        "file_path": "20-Meetings/meeting.md",
-        "title": "Meeting",
-        "type": "meeting",
-        "entity": ["diixtra"],
-        "status": "done",
-        "chunk_index": 0,
-        "content": "Discussion about IDOX migration timeline.",
-    }
-    mock_qdrant.query_points.return_value = MagicMock(points=[mock_point])
-    mock_embedder.embed.return_value = [np.random.rand(384).astype(np.float32)]
-
-    indexer = Indexer(
-        qdrant_url="http://localhost:6333",
-        qdrant_api_key="test",
-        collection_name="test_coll",
-        vector_size=384,
-        embedder=mock_embedder,
-    )
-    results = indexer.search("IDOX", limit=5, min_score=0.3, filters={"type": "meeting"})
-
+def test_search_filters_scalar_metadata(indexer):
+    indexer.upsert_chunks([
+        _chunk("a.md", 0, "Note about IDOX", metadata={"type": "meeting"}),
+        _chunk("b.md", 0, "Note about IDOX", metadata={"type": "project"}),
+    ])
+    results = indexer.search("IDOX", limit=5, min_score=0.0, filters={"type": "meeting"})
     assert len(results) == 1
-    assert results[0]["score"] == 0.85
-    assert results[0]["title"] == "Meeting"
-    assert results[0]["snippet"] == "Discussion about IDOX migration timeline."
+    assert results[0]["file_path"] == "a.md"
 
 
-def test_indexer_find_similar_returns_results(mock_qdrant, mock_embedder):
-    # Mock scroll returning the source file vector
-    source_point = MagicMock()
-    source_point.vector = [0.1] * 384
-    mock_qdrant.scroll.return_value = ([source_point], None)
+def test_search_filters_array_metadata(indexer):
+    indexer.upsert_chunks([
+        _chunk("a.md", 0, "Project X", metadata={"entity": ["diixtra", "kazie"]}),
+        _chunk("b.md", 0, "Project X", metadata={"entity": ["other"]}),
+    ])
+    results = indexer.search("Project X", limit=5, min_score=0.0, filters={"entity": "diixtra"})
+    assert len(results) == 1
+    assert results[0]["file_path"] == "a.md"
 
-    # Mock query_points returning similar results
-    similar_point = MagicMock()
-    similar_point.score = 0.75
-    similar_point.payload = {
-        "file_path": "10-Projects/project.md",
-        "title": "Project",
-        "type": "project",
-        "entity": ["diixtra"],
-        "status": "active",
-        "content": "Related project content.",
-    }
-    mock_qdrant.query_points.return_value = MagicMock(points=[similar_point])
 
-    indexer = Indexer(
-        qdrant_url="http://localhost:6333",
-        qdrant_api_key="test",
-        collection_name="test_coll",
-        vector_size=384,
-        embedder=mock_embedder,
-    )
-    results = indexer.find_similar("20-Meetings/meeting.md", limit=5)
-
+def test_find_similar_excludes_source(indexer):
+    indexer.upsert_chunks([
+        _chunk("a.md", 0, "IDOX migration timeline"),
+        _chunk("b.md", 0, "IDOX migration milestones"),
+    ])
+    results = indexer.find_similar("a.md", limit=5, min_score=0.0)
     assert results is not None
-    assert len(results) == 1
-    assert results[0]["score"] == 0.75
-    assert results[0]["title"] == "Project"
+    file_paths = [r["file_path"] for r in results]
+    assert "a.md" not in file_paths
+    assert "b.md" in file_paths
+    # Legacy find_similar response MUST NOT include chunk_index
+    assert "chunk_index" not in results[0]
 
 
-def test_indexer_find_similar_not_indexed(mock_qdrant, mock_embedder):
-    mock_qdrant.scroll.return_value = ([], None)
-
-    indexer = Indexer(
-        qdrant_url="http://localhost:6333",
-        qdrant_api_key="test",
-        collection_name="test_coll",
-        vector_size=384,
-        embedder=mock_embedder,
-    )
+def test_find_similar_returns_none_when_not_indexed(indexer):
     result = indexer.find_similar("nonexistent.md")
     assert result is None
 
 
-def test_indexer_get_stats(mock_qdrant, mock_embedder):
-    mock_info = MagicMock()
-    mock_info.points_count = 500
-    mock_info.status.value = "green"
-    mock_qdrant.get_collection.return_value = mock_info
-
-    indexer = Indexer(
-        qdrant_url="http://localhost:6333",
-        qdrant_api_key="test",
-        collection_name="test_coll",
-        vector_size=384,
-        embedder=mock_embedder,
-    )
+def test_get_stats_counts_rows(indexer):
+    assert indexer.get_stats()["total_points"] == 0
+    indexer.upsert_chunks([_chunk("a.md", 0, "one")])
+    indexer.upsert_chunks([_chunk("b.md", 0, "two")])
     stats = indexer.get_stats()
-    assert stats["total_points"] == 500
+    assert stats["total_points"] == 2
+    assert stats["last_indexed_at"] is not None
     assert stats["status"] == "green"
-    assert stats["last_indexed_at"] is None
 
 
-def test_indexer_ensure_collection_exists(mock_qdrant, mock_embedder):
-    mock_qdrant.collection_exists.return_value = True
-    indexer = Indexer(
-        qdrant_url="http://localhost:6333",
-        qdrant_api_key="test",
-        collection_name="test_coll",
-        vector_size=384,
-        embedder=mock_embedder,
-    )
-    indexer.ensure_collection()
-    mock_qdrant.create_collection.assert_not_called()
+def test_upsert_empty_chunks_is_noop(indexer):
+    indexer.upsert_chunks([])
+    assert indexer.get_stats()["total_points"] == 0
+
+
+def test_search_respects_min_score(indexer):
+    # All the deterministic embedder's vectors map similar chars to similar
+    # coordinates, so a very high min_score should drop unrelated results.
+    indexer.upsert_chunks([
+        _chunk("a.md", 0, "alpha"),
+        _chunk("b.md", 0, "zzzzz"),
+    ])
+    results = indexer.search("alpha", limit=5, min_score=0.99)
+    # Only the self-match (if any) should clear a 0.99 threshold; unrelated
+    # vectors must not.
+    for r in results:
+        assert r["score"] >= 0.99
+
+
+def test_search_with_none_filter_value_is_ignored(indexer):
+    indexer.upsert_chunks([
+        _chunk("a.md", 0, "content", metadata={"type": "meeting"}),
+    ])
+    results = indexer.search("content", limit=5, min_score=0.0, filters={"type": None})
+    assert len(results) == 1
