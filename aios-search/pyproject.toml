@@ -10,7 +10,7 @@ dependencies = [
     "pgvector==0.4.2",
     "watchfiles==1.1.1",
     "python-frontmatter==1.1.0",
-    "pydantic-settings==2.13.1",
+    "pydantic-settings==2.14.0",
     "httpx==0.28.1",
     "numpy==2.4.4",
 ]
@@ -26,7 +26,7 @@ dev = [
 mcp = [
     "mcp[cli]==1.27.0",
     "httpx==0.28.1",
-    "pydantic-settings==2.13.1",
+    "pydantic-settings==2.14.0",
 ]
 
 [build-system]
