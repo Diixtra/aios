@@ -2,6 +2,7 @@ import hashlib
 import logging
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from watchfiles import Change, watch
@@ -12,13 +13,23 @@ from aios_search.parser import parse_note, should_ignore
 
 logger = logging.getLogger(__name__)
 
+_RETRY_BASE_SECONDS = 30.0
+_RETRY_MAX_SECONDS = 3600.0
+
+
+@dataclass
+class _RetryInfo:
+    attempts: int = 0
+    next_retry_at: float = 0.0  # time.monotonic() reference
+    last_error: str = ""
+
 
 class Watcher:
     def __init__(self, settings: Settings, indexer: Indexer):
         self._settings = settings
         self._indexer = indexer
         self._vault = Path(settings.vault_path)
-        self._retry_set: set[str] = set()
+        self._retry_state: dict[str, _RetryInfo] = {}
         self._paused = False
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -40,6 +51,9 @@ class Watcher:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
+    def has_pending_retry(self, rel_path: str) -> bool:
+        return rel_path in self._retry_state
+
     def _should_ignore(self, path: Path) -> bool:
         return should_ignore(
             path,
@@ -48,7 +62,36 @@ class Watcher:
             self._settings.ignored_files,
         )
 
+    def _record_failure(self, rel_path: str, exc: Exception) -> None:
+        info = self._retry_state.get(rel_path)
+        first_failure = info is None
+        if info is None:
+            info = _RetryInfo()
+            self._retry_state[rel_path] = info
+        info.attempts += 1
+        backoff = min(
+            _RETRY_BASE_SECONDS * (2 ** (info.attempts - 1)),
+            _RETRY_MAX_SECONDS,
+        )
+        info.next_retry_at = time.monotonic() + backoff
+        info.last_error = f"{type(exc).__name__}: {exc}"
+        if first_failure:
+            logger.exception(
+                "Failed to index %s (first failure, next retry in %ds)",
+                rel_path,
+                int(backoff),
+            )
+        else:
+            logger.warning(
+                "Failed to index %s (attempt %d, next retry in %ds): %s",
+                rel_path,
+                info.attempts,
+                int(backoff),
+                info.last_error,
+            )
+
     def _process_file(self, path: Path):
+        rel_path = str(path.relative_to(self._vault))
         try:
             chunks = parse_note(
                 path,
@@ -57,31 +100,36 @@ class Watcher:
                 chunk_word_window=self._settings.chunk_word_window,
                 chunk_word_overlap=self._settings.chunk_word_overlap,
             )
-            rel_path = str(path.relative_to(self._vault))
             self._indexer.delete_by_file_path(rel_path)
             self._indexer.upsert_chunks(chunks)
-            self._retry_set.discard(rel_path)
-        except Exception:
-            rel_path = str(path.relative_to(self._vault))
-            self._retry_set.add(rel_path)
-            logger.exception("Failed to index %s, added to retry set", rel_path)
+            self._retry_state.pop(rel_path, None)
+        except Exception as exc:
+            self._record_failure(rel_path, exc)
 
     def _process_delete(self, path: Path):
         try:
             rel_path = str(path.relative_to(self._vault))
             self._indexer.delete_by_file_path(rel_path)
-            self._retry_set.discard(rel_path)
+            self._retry_state.pop(rel_path, None)
         except Exception:
             logger.exception("Failed to delete vectors for %s", path)
 
     def _process_retries(self):
-        if not self._retry_set:
+        if not self._retry_state:
             return
-        for rel_path in list(self._retry_set):
+        now = time.monotonic()
+        due = [
+            rel_path
+            for rel_path, info in list(self._retry_state.items())
+            if info.next_retry_at <= now
+        ]
+        for rel_path in due:
             path = self._vault / rel_path
             if path.is_file():
                 logger.info("Retrying %s", rel_path)
                 self._process_file(path)
+            else:
+                self._retry_state.pop(rel_path, None)
 
     def reconcile(self):
         logger.info("Starting reconciliation...")
@@ -109,9 +157,10 @@ class Watcher:
             self._process_file(path)
 
         logger.info(
-            "Reconciliation complete: %d indexed, %d orphans removed",
+            "Reconciliation complete: %d indexed, %d orphans removed, %d pending retry",
             len(to_index),
             len(set(indexed) - set(vault_files)),
+            len(self._retry_state),
         )
 
     def full_reindex(self):

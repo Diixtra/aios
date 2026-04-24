@@ -1,4 +1,5 @@
 import hashlib
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, call
 
@@ -44,7 +45,63 @@ def test_process_file_adds_to_retry_on_failure(watcher, mock_indexer, tmp_vault)
     mock_indexer.upsert_chunks.side_effect = Exception("database unavailable")
     path = tmp_vault / "12-CRM" / "Contacts" / "Shah Ali.md"
     watcher._process_file(path)
-    assert "12-CRM/Contacts/Shah Ali.md" in watcher._retry_set
+    assert watcher.has_pending_retry("12-CRM/Contacts/Shah Ali.md")
+
+
+def test_process_file_first_failure_logs_exception_with_traceback(watcher, mock_indexer, tmp_vault, caplog):
+    mock_indexer.upsert_chunks.side_effect = Exception("Qdrant down")
+    path = tmp_vault / "12-CRM" / "Contacts" / "Shah Ali.md"
+    with caplog.at_level(logging.WARNING, logger="aios_search.watcher"):
+        watcher._process_file(path)
+    exception_records = [r for r in caplog.records if r.exc_info is not None]
+    assert len(exception_records) == 1, "first failure should log with traceback"
+
+
+def test_process_file_subsequent_failures_suppress_traceback(watcher, mock_indexer, tmp_vault, caplog):
+    mock_indexer.upsert_chunks.side_effect = Exception("Qdrant down")
+    path = tmp_vault / "12-CRM" / "Contacts" / "Shah Ali.md"
+    watcher._process_file(path)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="aios_search.watcher"):
+        watcher._process_file(path)
+        watcher._process_file(path)
+    exception_records = [r for r in caplog.records if r.exc_info is not None]
+    assert exception_records == [], "repeat failures must not re-log full tracebacks"
+    warning_records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warning_records, "repeat failures should still surface a warning line"
+
+
+def test_process_file_success_clears_retry(watcher, mock_indexer, tmp_vault):
+    mock_indexer.upsert_chunks.side_effect = Exception("transient")
+    path = tmp_vault / "12-CRM" / "Contacts" / "Shah Ali.md"
+    watcher._process_file(path)
+    assert watcher.has_pending_retry("12-CRM/Contacts/Shah Ali.md")
+    mock_indexer.upsert_chunks.side_effect = None
+    watcher._process_file(path)
+    assert not watcher.has_pending_retry("12-CRM/Contacts/Shah Ali.md")
+
+
+def test_process_retries_respects_backoff(watcher, mock_indexer, tmp_vault):
+    mock_indexer.upsert_chunks.side_effect = Exception("Qdrant down")
+    path = tmp_vault / "12-CRM" / "Contacts" / "Shah Ali.md"
+    watcher._process_file(path)
+    initial_call_count = mock_indexer.upsert_chunks.call_count
+    # Immediately calling _process_retries should NOT retry: backoff hasn't elapsed.
+    watcher._process_retries()
+    assert mock_indexer.upsert_chunks.call_count == initial_call_count
+
+
+def test_process_retries_fires_when_backoff_elapsed(watcher, mock_indexer, tmp_vault, monkeypatch):
+    mock_indexer.upsert_chunks.side_effect = Exception("Qdrant down")
+    path = tmp_vault / "12-CRM" / "Contacts" / "Shah Ali.md"
+    watcher._process_file(path)
+    # Force the backoff to elapse by fast-forwarding the monotonic clock.
+    from aios_search import watcher as watcher_mod
+    original = watcher_mod.time.monotonic
+    monkeypatch.setattr(watcher_mod.time, "monotonic", lambda: original() + 3600)
+    call_count_before = mock_indexer.upsert_chunks.call_count
+    watcher._process_retries()
+    assert mock_indexer.upsert_chunks.call_count > call_count_before
 
 
 def test_process_delete(watcher, mock_indexer, tmp_vault):
