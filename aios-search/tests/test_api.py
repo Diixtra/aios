@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -125,7 +125,41 @@ def test_get_note_not_found(client):
 def test_health_no_auth_required(client):
     resp = client.get("/health")
     assert resp.status_code == 200
-    assert "total_points" in resp.json()
+    body = resp.json()
+    assert body["healthy"] is True
+    assert body["indexer"]["available"] is True
+    assert body["indexer"]["total_points"] == 100
+
+
+def test_health_200_when_indexer_unavailable(client, mock_indexer):
+    mock_indexer.get_stats.side_effect = RuntimeError("qdrant down")
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["healthy"] is True
+    assert body["indexer"]["available"] is False
+    assert "qdrant down" in body["indexer"]["error"]
+
+
+def test_health_reports_reconcile_state(mock_indexer, tmp_vault):
+    from aios_search.api import create_router
+    from aios_search.main import ReconcileState
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    router = create_router(
+        indexer=mock_indexer,
+        vault_path=str(tmp_vault),
+        api_key="test-key",
+    )
+    app.include_router(router)
+    app.state.reconcile = ReconcileState(stage="reconciling")
+    with TestClient(app) as c:
+        resp = c.get("/health")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["reconcile"]["stage"] == "reconciling"
+    assert body["reconcile"]["error"] is None
 
 
 def test_reindex(client, mock_indexer):

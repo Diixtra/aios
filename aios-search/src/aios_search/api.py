@@ -3,7 +3,7 @@ import threading
 from pathlib import Path
 
 import frontmatter
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -92,12 +92,25 @@ def create_router(
         }
 
     @router.get("/health")
-    def health():
+    def health(request: Request):
+        reconcile = getattr(request.app.state, "reconcile", None)
+        reconcile_info = {
+            "stage": getattr(reconcile, "stage", "unknown"),
+            "error": getattr(reconcile, "error", None),
+        }
         try:
             stats = indexer.get_stats()
-            return {**stats, "healthy": True}
-        except Exception as e:
-            return {"healthy": False, "error": str(e)}
+            indexer_info: dict = {"available": True, **stats}
+        except Exception as exc:
+            indexer_info = {
+                "available": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        return {
+            "healthy": True,
+            "reconcile": reconcile_info,
+            "indexer": indexer_info,
+        }
 
     @router.post("/reindex", status_code=202)
     def reindex(_=Depends(auth)):
