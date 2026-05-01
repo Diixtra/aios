@@ -1064,15 +1064,213 @@ func (s *Scheduler) Run(ctx context.Context) {
 
 - [ ] **Step 5: Commit**
 
-### Task B6: Device-flow initiation
+### Task B6: Bundle upload endpoint
 
-**Goal:** Spike outcome A3 dictates how this works. If pi exposes device-flow URLs in JSON output (outcome b), the broker scrapes them and posts to Slack. If not (outcome a/c), the broker hosts a "login console" — see Spike Decision; this plan assumes outcome b. If the spike rejected b, replace this task per the findings before continuing.
+**Goal:** Phase -1 task A3 confirmed pi 0.70.6's `/login` is interactive-only. The broker therefore cannot initiate logins; it *receives* an auth bundle bootstrapped by the user on a TTY-backed laptop. Tasks B6/B7/B8 implement that receive → validate → orchestrate state path. The original device-flow design (commits prior to A3 findings) is replaced wholesale.
 
 **Files:**
-- Create: `auth-broker/internal/auth/deviceflow.go`
-- Create: `auth-broker/internal/auth/deviceflow_test.go`
+- Create: `auth-broker/internal/server/bundle.go`
+- Create: `auth-broker/internal/server/bundle_test.go`
 
-- [ ] **Step 1: Failing test — start a device-flow, capture verification URL from pi stdout**
+The handler accepts an `auth.json` upload (multipart `bundle` field), validates it parses as JSON, persists via the store from Task B3, and triggers a validation cycle (Task B7). It is admin-token-guarded (Task B12) — only the user's bootstrap script should hit it.
+
+- [ ] **Step 1: Failing test — happy-path upload stores the bundle and returns 202 Accepted**
+
+`auth-broker/internal/server/bundle_test.go`:
+
+```go
+package server
+
+import (
+	"bytes"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"testing"
+
+	"github.com/Diixtra/aios/auth-broker/internal/store"
+)
+
+func TestUploadBundle_Persists(t *testing.T) {
+	dir := t.TempDir()
+	st := store.New(filepath.Join(dir, "auth.json"))
+	h := NewBundleHandler(st, func() {})
+
+	body := &bytes.Buffer{}
+	w := multipart.NewWriter(body)
+	fw, _ := w.CreateFormFile("bundle", "auth.json")
+	_, _ = fw.Write([]byte(`{"chatgpt":{"type":"oauth","refresh_token":"r1"}}`))
+	_ = w.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/bundle", body)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("got %d, want 202; body=%s", rec.Code, rec.Body)
+	}
+	got, err := st.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.Raw) != `{"chatgpt":{"type":"oauth","refresh_token":"r1"}}` {
+		t.Fatalf("bundle not persisted; got %s", got.Raw)
+	}
+}
+
+func TestUploadBundle_RejectsNonJSON(t *testing.T) {
+	dir := t.TempDir()
+	st := store.New(filepath.Join(dir, "auth.json"))
+	h := NewBundleHandler(st, func() {})
+
+	body := &bytes.Buffer{}
+	w := multipart.NewWriter(body)
+	fw, _ := w.CreateFormFile("bundle", "auth.json")
+	_, _ = fw.Write([]byte(`not json`))
+	_ = w.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/bundle", body)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("got %d, want 400", rec.Code)
+	}
+}
+
+func TestUploadBundle_RejectsOversize(t *testing.T) {
+	dir := t.TempDir()
+	st := store.New(filepath.Join(dir, "auth.json"))
+	h := NewBundleHandler(st, func() {})
+
+	body := &bytes.Buffer{}
+	w := multipart.NewWriter(body)
+	fw, _ := w.CreateFormFile("bundle", "auth.json")
+	_, _ = fw.Write(bytes.Repeat([]byte("x"), 2*1024*1024)) // 2MB > limit
+	_ = w.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/bundle", body)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("got %d, want 413", rec.Code)
+	}
+}
+```
+
+- [ ] **Step 2: Run tests, expect fail**
+
+```bash
+go test ./internal/server/... -run TestUploadBundle 2>&1 | head -20
+```
+
+- [ ] **Step 3: Implement**
+
+`auth-broker/internal/server/bundle.go`:
+
+```go
+package server
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+
+	"github.com/Diixtra/aios/auth-broker/internal/store"
+)
+
+const bundleSizeLimit = 1 << 20 // 1 MiB — pi auth.json is small (KB range)
+
+// BundleHandler accepts an auth.json upload and triggers re-validation.
+//
+// Schema is intentionally not validated — pi is the source of truth for
+// auth.json structure. We require only that the body is valid JSON so we
+// fail fast on `curl -F bundle=@/wrong/file`.
+type BundleHandler struct {
+	store           *store.Store
+	triggerValidate func()
+}
+
+func NewBundleHandler(s *store.Store, triggerValidate func()) *BundleHandler {
+	return &BundleHandler{store: s, triggerValidate: triggerValidate}
+}
+
+func (h *BundleHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, bundleSizeLimit+1)
+	if err := r.ParseMultipartForm(bundleSizeLimit); err != nil {
+		var maxErr *http.MaxBytesError
+		if asMaxBytes(err, &maxErr) {
+			http.Error(w, "bundle too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "invalid multipart body", http.StatusBadRequest)
+		return
+	}
+	file, _, err := r.FormFile("bundle")
+	if err != nil {
+		http.Error(w, "missing bundle field", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(file)
+	if err != nil {
+		http.Error(w, "read body", http.StatusBadRequest)
+		return
+	}
+	if !json.Valid(raw) {
+		http.Error(w, "bundle must be JSON", http.StatusBadRequest)
+		return
+	}
+	if err := h.store.Write(store.Bundle{Raw: raw}); err != nil {
+		http.Error(w, "persist failed", http.StatusInternalServerError)
+		return
+	}
+	if h.triggerValidate != nil {
+		h.triggerValidate()
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func asMaxBytes(err error, target **http.MaxBytesError) bool {
+	for {
+		if e, ok := err.(*http.MaxBytesError); ok {
+			*target = e
+			return true
+		}
+		u, ok := err.(interface{ Unwrap() error })
+		if !ok {
+			return false
+		}
+		err = u.Unwrap()
+		if err == nil {
+			return false
+		}
+	}
+}
+```
+
+- [ ] **Step 4: Tests pass**
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add auth-broker/internal/server/bundle.go auth-broker/internal/server/bundle_test.go
+git commit -m "feat(auth-broker): bundle upload endpoint (POST /v1/auth/bundle)"
+```
+
+### Task B7: Bundle validation
+
+**Files:**
+- Create: `auth-broker/internal/auth/validate.go`
+- Create: `auth-broker/internal/auth/validate_test.go`
+
+After an upload, the broker must confirm the bundle actually authenticates with pi. We use `pi --list-models` (cheap; no inference call) — if it lists models without an auth error, the bundle is good. If it fails, the state machine moves to Expired and the user is DM'd.
+
+- [ ] **Step 1: Failing test — Validate against a fake pi reports success/failure**
+
+`auth-broker/internal/auth/validate_test.go`:
 
 ```go
 package auth
@@ -1081,429 +1279,303 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-func TestStartDeviceFlow_CapturesURL(t *testing.T) {
+func TestValidate_ReportsSuccessOnZeroExit(t *testing.T) {
 	dir := t.TempDir()
 	fakePi := filepath.Join(dir, "pi-fake")
-	// Fake pi emits a JSON event matching pi's real device-flow event shape (per spike A3).
-	script := `#!/usr/bin/env bash
-echo '{"type":"device_flow_start","verification_uri_complete":"https://auth.openai.com/device?code=ABC-DEF"}'
-sleep 0.1
-echo '{"type":"device_flow_completed"}'
-exit 0
-`
-	if err := os.WriteFile(fakePi, []byte(script), 0o755); err != nil {
+	if err := os.WriteFile(fakePi, []byte("#!/usr/bin/env bash\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	df := NewDeviceFlow(fakePi, dir)
-	res, err := df.Start(context.Background())
-	if err != nil {
-		t.Fatalf("start: %v", err)
+	v := NewValidator(fakePi, dir)
+	if err := v.Validate(context.Background()); err != nil {
+		t.Fatalf("Validate: %v", err)
 	}
-	if !strings.HasPrefix(res.VerificationURI, "https://auth.openai.com/device") {
-		t.Fatalf("got %q", res.VerificationURI)
+}
+
+func TestValidate_ReportsFailureOnNonZeroExit(t *testing.T) {
+	dir := t.TempDir()
+	fakePi := filepath.Join(dir, "pi-fake")
+	if err := os.WriteFile(fakePi, []byte("#!/usr/bin/env bash\necho 'auth error' >&2; exit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	v := NewValidator(fakePi, dir)
+	if err := v.Validate(context.Background()); err == nil {
+		t.Fatal("expected validation error")
 	}
 }
 ```
 
-- [ ] **Step 2: Implement**
+- [ ] **Step 2: Run tests, expect fail**
 
-`auth-broker/internal/auth/deviceflow.go`:
+- [ ] **Step 3: Implement**
+
+`auth-broker/internal/auth/validate.go`:
 
 ```go
 package auth
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
+	"fmt"
 	"os/exec"
-	"sync"
 )
 
-type DeviceFlowResult struct {
-	VerificationURI string
-	UserCode        string
-}
-
-type DeviceFlow struct {
+// Validator runs a cheap pi command against the configured PI dir to confirm
+// the bundle authenticates. We use --list-models because it touches the
+// provider for auth checks but does not bill an inference call.
+type Validator struct {
 	piBinary string
 	piDir    string
-
-	mu      sync.Mutex
-	running bool
-	current *DeviceFlowResult
 }
 
-func NewDeviceFlow(piBinary, piDir string) *DeviceFlow {
-	return &DeviceFlow{piBinary: piBinary, piDir: piDir}
+func NewValidator(piBinary, piDir string) *Validator {
+	return &Validator{piBinary: piBinary, piDir: piDir}
 }
 
-// Start initiates a device flow if one isn't already pending. If a flow is in
-// progress, returns the existing result (idempotent — see Task B8).
-func (d *DeviceFlow) Start(ctx context.Context) (*DeviceFlowResult, error) {
-	d.mu.Lock()
-	if d.running {
-		res := d.current
-		d.mu.Unlock()
-		if res == nil {
-			return nil, errors.New("deviceflow: already starting, no URL yet")
-		}
-		return res, nil
+func (v *Validator) Validate(ctx context.Context) error {
+	if v.piBinary == "" || v.piDir == "" {
+		return errors.New("validate: piBinary and piDir required")
 	}
-	d.running = true
-	d.mu.Unlock()
-
-	defer func() {
-		d.mu.Lock()
-		d.running = false
-		d.current = nil
-		d.mu.Unlock()
-	}()
-
-	cmd := exec.CommandContext(ctx, d.piBinary, "--mode", "json", "/login")
-	cmd.Env = append(cmd.Environ(), "PI_CODING_AGENT_DIR="+d.piDir)
-	stdout, err := cmd.StdoutPipe()
+	cmd := exec.CommandContext(ctx, v.piBinary, "--list-models")
+	cmd.Env = append(cmd.Environ(), "PI_CODING_AGENT_DIR="+v.piDir)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("pi validate: %w (output: %s)", err, string(out))
 	}
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	defer func() { _ = cmd.Wait() }()
-
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		var ev struct {
-			Type            string `json:"type"`
-			VerificationURI string `json:"verification_uri_complete"`
-			UserCode        string `json:"user_code"`
-		}
-		if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
-			continue
-		}
-		switch ev.Type {
-		case "device_flow_start":
-			res := &DeviceFlowResult{VerificationURI: ev.VerificationURI, UserCode: ev.UserCode}
-			d.mu.Lock()
-			d.current = res
-			d.mu.Unlock()
-			return res, nil
-		}
-	}
-	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
-		return nil, err
-	}
-	return nil, errors.New("deviceflow: pi exited without emitting device_flow_start")
+	return nil
 }
 ```
 
-> **Note for the engineer:** the JSON event names (`device_flow_start`, `verification_uri_complete`) are placeholders matching the spike script's shape. **Replace them with the actual pi event names captured in `samples/headless-login-events.jsonl` from Task A3.** This is a known coupling — fix it as part of the test/impl pair, not as a follow-up.
+- [ ] **Step 4: Tests pass**
 
-- [ ] **Step 3: Tests pass**
-
-- [ ] **Step 4: Commit**
-
-### Task B7: Device-flow completion polling
-
-**Files:**
-- Modify: `auth-broker/internal/auth/deviceflow.go`
-- Modify: `auth-broker/internal/auth/deviceflow_test.go`
-
-`Start` only returns the URL. We need a separate path that *waits* for the user to approve and then captures the resulting bundle.
-
-- [ ] **Step 1: Add failing test for `Wait`**
-
-Append to `deviceflow_test.go`:
-
-```go
-func TestWait_BlocksUntilCompletion(t *testing.T) {
-	dir := t.TempDir()
-	fakePi := filepath.Join(dir, "pi-fake")
-	script := `#!/usr/bin/env bash
-echo '{"type":"device_flow_start","verification_uri_complete":"https://x"}'
-sleep 0.05
-echo '{"type":"device_flow_completed"}'
-`
-	_ = os.WriteFile(fakePi, []byte(script), 0o755)
-	df := NewDeviceFlow(fakePi, dir)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if _, err := df.Start(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if err := df.Wait(ctx); err != nil {
-		t.Fatalf("wait: %v", err)
-	}
-}
-```
-
-- [ ] **Step 2: Refactor — Start only emits URL; Wait drives completion**
-
-Replace `auth-broker/internal/auth/deviceflow.go` with this:
-
-```go
-package auth
-
-import (
-	"bufio"
-	"context"
-	"encoding/json"
-	"errors"
-	"os/exec"
-	"sync"
-)
-
-type DeviceFlowResult struct {
-	VerificationURI string
-	UserCode        string
-}
-
-type DeviceFlow struct {
-	piBinary string
-	piDir    string
-
-	mu       sync.Mutex
-	cmd      *exec.Cmd
-	doneCh   chan error
-	urlCh    chan *DeviceFlowResult
-	urlOnce  sync.Once
-	urlValue *DeviceFlowResult
-}
-
-func NewDeviceFlow(piBinary, piDir string) *DeviceFlow {
-	return &DeviceFlow{piBinary: piBinary, piDir: piDir}
-}
-
-// Start launches pi --mode json /login, returns when pi emits the
-// device_flow_start event. Subsequent calls before Wait completes are no-ops
-// returning the cached URL.
-func (d *DeviceFlow) Start(ctx context.Context) (*DeviceFlowResult, error) {
-	d.mu.Lock()
-	if d.cmd != nil {
-		res := d.urlValue
-		d.mu.Unlock()
-		if res == nil {
-			return nil, errors.New("deviceflow: in progress, no URL captured yet")
-		}
-		return res, nil
-	}
-
-	cmd := exec.CommandContext(ctx, d.piBinary, "--mode", "json", "/login")
-	cmd.Env = append(cmd.Environ(), "PI_CODING_AGENT_DIR="+d.piDir)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		d.mu.Unlock()
-		return nil, err
-	}
-	if err := cmd.Start(); err != nil {
-		d.mu.Unlock()
-		return nil, err
-	}
-
-	d.cmd = cmd
-	d.doneCh = make(chan error, 1)
-	d.urlCh = make(chan *DeviceFlowResult, 1)
-	d.mu.Unlock()
-
-	// Scanner goroutine consumes pi stdout, captures URL, then signals done.
-	go func() {
-		scanner := bufio.NewScanner(stdout)
-		var sawCompletion bool
-		for scanner.Scan() {
-			var ev struct {
-				Type            string `json:"type"`
-				VerificationURI string `json:"verification_uri_complete"`
-				UserCode        string `json:"user_code"`
-			}
-			if err := json.Unmarshal(scanner.Bytes(), &ev); err != nil {
-				continue
-			}
-			switch ev.Type {
-			case "device_flow_start":
-				res := &DeviceFlowResult{VerificationURI: ev.VerificationURI, UserCode: ev.UserCode}
-				d.urlOnce.Do(func() {
-					d.urlValue = res
-					d.urlCh <- res
-				})
-			case "device_flow_completed":
-				sawCompletion = true
-			}
-		}
-		exitErr := cmd.Wait()
-		if exitErr != nil {
-			d.doneCh <- exitErr
-			return
-		}
-		if !sawCompletion {
-			d.doneCh <- errors.New("deviceflow: pi exited without device_flow_completed")
-			return
-		}
-		d.doneCh <- nil
-	}()
-
-	select {
-	case res := <-d.urlCh:
-		return res, nil
-	case err := <-d.doneCh:
-		// Pi exited before emitting the URL.
-		return nil, err
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-// Wait blocks until the device flow completes (user approved on phone) or
-// fails. Must be called after Start.
-func (d *DeviceFlow) Wait(ctx context.Context) error {
-	d.mu.Lock()
-	doneCh := d.doneCh
-	d.mu.Unlock()
-	if doneCh == nil {
-		return errors.New("deviceflow: Wait called before Start")
-	}
-	select {
-	case err := <-doneCh:
-		d.mu.Lock()
-		d.cmd = nil
-		d.doneCh = nil
-		d.urlCh = nil
-		d.urlValue = nil
-		d.urlOnce = sync.Once{}
-		d.mu.Unlock()
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-```
-
-- [ ] **Step 3: Tests pass for both Start and Wait**
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git commit -am "feat(auth-broker): device-flow Start + Wait"
+git add auth-broker/internal/auth/validate.go auth-broker/internal/auth/validate_test.go
+git commit -m "feat(auth-broker): bundle validation via pi --list-models"
 ```
 
-### Task B8: Idempotent reauth orchestration
+### Task B8: State orchestration
 
 **Files:**
-- Create: `auth-broker/internal/auth/reauth.go`
-- Create: `auth-broker/internal/auth/reauth_test.go`
+- Create: `auth-broker/internal/auth/orchestrator.go`
+- Create: `auth-broker/internal/auth/orchestrator_test.go`
 
-- [ ] **Step 1: Failing test — concurrent calls return the same URL**
+The orchestrator is the brain that wires Tasks B2/B4/B5/B7 together. It consumes events:
+- bundle uploaded (from B6) → run validate → on success transition to Healthy and fire confirmation DM; on failure transition to Expired and fire urgent DM
+- periodic tick (from B5 scheduler) → if bundle absent, state stays Uninitialised; if present, run refresh (B4) then validate (B7); transition to Warning when bundle older than warn threshold; transition to Expired on validation failure
+- explicit `/aios-reauth` trigger (from B16) → re-run validate immediately and re-emit bootstrap recipe DM
+
+Notifications fire **only on state transition** (not every tick) to avoid spamming.
+
+- [ ] **Step 1: Failing test — fresh upload + valid bundle → Healthy + Recovered DM**
+
+`auth-broker/internal/auth/orchestrator_test.go`:
 
 ```go
 package auth
 
 import (
 	"context"
-	"sync"
+	"errors"
 	"testing"
 )
 
-type fakeDF struct {
-	url string
+type fakeNotifier struct {
+	calls []string
 }
 
-func (f *fakeDF) Start(ctx context.Context) (*DeviceFlowResult, error) {
-	return &DeviceFlowResult{VerificationURI: f.url}, nil
+func (f *fakeNotifier) BootstrapRecipe(ctx context.Context, reason string) error {
+	f.calls = append(f.calls, "bootstrap:"+reason)
+	return nil
 }
-func (f *fakeDF) Wait(ctx context.Context) error { return nil }
+func (f *fakeNotifier) Recovered(ctx context.Context) error {
+	f.calls = append(f.calls, "recovered")
+	return nil
+}
+func (f *fakeNotifier) Warning(ctx context.Context, ageDays int) error {
+	f.calls = append(f.calls, "warning")
+	return nil
+}
 
-func TestReauth_Idempotent(t *testing.T) {
-	r := NewReauth(&fakeDF{url: "https://x"}, NewMachine())
-	var wg sync.WaitGroup
-	urls := make(chan string, 5)
-	for i := 0; i < 5; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			res, err := r.Trigger(context.Background())
-			if err != nil {
-				t.Error(err)
-				return
-			}
-			urls <- res.VerificationURI
-		}()
+type fakeValidator struct{ err error }
+
+func (f *fakeValidator) Validate(ctx context.Context) error { return f.err }
+
+func TestOrchestrator_UploadOK_TransitionsToHealthyAndDMsRecovery(t *testing.T) {
+	sm := NewMachine()
+	sm.Set(StateExpired)
+	n := &fakeNotifier{}
+	o := NewOrchestrator(sm, &fakeValidator{}, n)
+
+	if err := o.OnBundleUploaded(context.Background()); err != nil {
+		t.Fatalf("OnBundleUploaded: %v", err)
 	}
-	wg.Wait()
-	close(urls)
-	seen := map[string]int{}
-	for u := range urls {
-		seen[u]++
+	if sm.State() != StateHealthy {
+		t.Fatalf("state=%s want Healthy", sm.State())
 	}
-	if len(seen) != 1 {
-		t.Fatalf("expected 1 unique URL, saw %d", len(seen))
+	if len(n.calls) != 1 || n.calls[0] != "recovered" {
+		t.Fatalf("notify=%v want [recovered]", n.calls)
+	}
+}
+
+func TestOrchestrator_UploadFails_TransitionsToExpiredAndDMsBootstrap(t *testing.T) {
+	sm := NewMachine()
+	sm.Set(StateHealthy)
+	n := &fakeNotifier{}
+	o := NewOrchestrator(sm, &fakeValidator{err: errors.New("auth error")}, n)
+
+	if err := o.OnBundleUploaded(context.Background()); err == nil {
+		t.Fatal("expected error")
+	}
+	if sm.State() != StateExpired {
+		t.Fatalf("state=%s want Expired", sm.State())
+	}
+	if len(n.calls) != 1 || n.calls[0] != "bootstrap:upload-validation-failed" {
+		t.Fatalf("notify=%v", n.calls)
+	}
+}
+
+func TestOrchestrator_Tick_NoBundle_NoTransition(t *testing.T) {
+	sm := NewMachine()
+	sm.Set(StateUnknown) // Set ignores allowed list — set initial state directly
+	n := &fakeNotifier{}
+	o := NewOrchestrator(sm, &fakeValidator{}, n)
+	o.bundleAge = func() (int, bool) { return 0, false } // no bundle
+	if err := o.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(n.calls) != 0 {
+		t.Fatalf("expected no DMs; got %v", n.calls)
+	}
+}
+
+func TestOrchestrator_Tick_AgedBundle_TransitionsToWarningOnce(t *testing.T) {
+	sm := NewMachine()
+	sm.Set(StateHealthy)
+	n := &fakeNotifier{}
+	o := NewOrchestrator(sm, &fakeValidator{}, n)
+	o.bundleAge = func() (int, bool) { return 25, true } // past warn (default 23d)
+	if err := o.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if sm.State() != StateWarning {
+		t.Fatalf("state=%s want Warning", sm.State())
+	}
+	// Two ticks, one DM — transition fires only once.
+	if len(n.calls) != 1 || n.calls[0] != "warning" {
+		t.Fatalf("notify=%v want [warning]", n.calls)
 	}
 }
 ```
 
-- [ ] **Step 2: Implement**
+- [ ] **Step 2: Run, fail**
+
+- [ ] **Step 3: Implement**
+
+`auth-broker/internal/auth/orchestrator.go`:
 
 ```go
 package auth
 
 import (
 	"context"
-	"sync"
+	"errors"
 )
 
-type deviceFlow interface {
-	Start(context.Context) (*DeviceFlowResult, error)
-	Wait(context.Context) error
+const defaultWarnAgeDays = 23 // OAuth refresh-token chains commonly survive ~30d
+
+type validator interface {
+	Validate(context.Context) error
 }
 
-type Reauth struct {
-	df  deviceFlow
-	sm  *Machine
-	mu  sync.Mutex
-	cur *DeviceFlowResult
+type Notifier interface {
+	BootstrapRecipe(ctx context.Context, reason string) error
+	Recovered(ctx context.Context) error
+	Warning(ctx context.Context, ageDays int) error
 }
 
-func NewReauth(df deviceFlow, sm *Machine) *Reauth {
-	return &Reauth{df: df, sm: sm}
+type Orchestrator struct {
+	sm        *Machine
+	validator validator
+	notifier  Notifier
+
+	// bundleAge returns (ageDays, present). Wired by main to a closure over
+	// the store's mtime; injectable for tests.
+	bundleAge   func() (int, bool)
+	warnAgeDays int
 }
 
-func (r *Reauth) Trigger(ctx context.Context) (*DeviceFlowResult, error) {
-	r.mu.Lock()
-	if r.cur != nil {
-		res := r.cur
-		r.mu.Unlock()
-		return res, nil
+func NewOrchestrator(sm *Machine, v validator, n Notifier) *Orchestrator {
+	return &Orchestrator{sm: sm, validator: v, notifier: n, warnAgeDays: defaultWarnAgeDays}
+}
+
+// OnBundleUploaded validates the freshly-stored bundle and transitions state.
+func (o *Orchestrator) OnBundleUploaded(ctx context.Context) error {
+	prev := o.sm.State()
+	if err := o.validator.Validate(ctx); err != nil {
+		_ = o.sm.Transition(StateExpired)
+		_ = o.notifier.BootstrapRecipe(ctx, "upload-validation-failed")
+		return err
 	}
-	res, err := r.df.Start(ctx)
-	if err != nil {
-		r.mu.Unlock()
-		return nil, err
+	_ = o.sm.Transition(StateHealthy)
+	if prev != StateHealthy {
+		_ = o.notifier.Recovered(ctx)
 	}
-	r.cur = res
-	r.mu.Unlock()
-	if err := r.sm.Transition(StateAwaiting); err != nil {
-		// state might already be Awaiting — tolerate.
-		_ = err
+	return nil
+}
+
+// Tick runs the periodic check. Should be called by the B5 scheduler.
+func (o *Orchestrator) Tick(ctx context.Context) error {
+	if o.bundleAge == nil {
+		return errors.New("orchestrator: bundleAge not wired")
 	}
-	go func() {
-		bg := context.Background()
-		_ = r.df.Wait(bg)
-		r.mu.Lock()
-		r.cur = nil
-		r.mu.Unlock()
-		_ = r.sm.Transition(StateHealthy)
-	}()
-	return res, nil
+	age, present := o.bundleAge()
+	if !present {
+		// No bundle uploaded yet. Nothing to do — bootstrap recipe was sent
+		// at startup; do not re-DM on every tick.
+		return nil
+	}
+	prev := o.sm.State()
+	if err := o.validator.Validate(ctx); err != nil {
+		if prev != StateExpired {
+			_ = o.sm.Transition(StateExpired)
+			_ = o.notifier.BootstrapRecipe(ctx, "tick-validation-failed")
+		}
+		return err
+	}
+	if age >= o.warnAgeDays {
+		if prev != StateWarning {
+			_ = o.sm.Transition(StateWarning)
+			_ = o.notifier.Warning(ctx, age)
+		}
+		return nil
+	}
+	// Healthy.
+	if prev != StateHealthy {
+		_ = o.sm.Transition(StateHealthy)
+		if prev == StateExpired || prev == StateWarning {
+			_ = o.notifier.Recovered(ctx)
+		}
+	}
+	return nil
 }
 ```
 
-- [ ] **Step 3: Tests pass**
+- [ ] **Step 4: Tests pass**
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
+
+```bash
+git add auth-broker/internal/auth/orchestrator.go auth-broker/internal/auth/orchestrator_test.go
+git commit -m "feat(auth-broker): state orchestrator wires validator/store/notifier"
+```
 
 ### Task B9: Lease API
 
@@ -1671,7 +1743,7 @@ func newID() string {
 - Create: `auth-broker/internal/notify/slack.go`
 - Create: `auth-broker/internal/notify/slack_test.go`
 
-The broker watches for state transitions; on Warning/Expired it sends the user a DM with the device-flow URL.
+The broker DMs the user on state transitions only (the orchestrator from B8 enforces transition-only firing). The notifier exposes three messages matching the orchestrator's `Notifier` interface: bootstrap recipe (initial / on validation failure), warning (bundle aging), recovered (back to Healthy).
 
 - [ ] **Step 1: Failing test using a fake Slack client**
 
@@ -1681,6 +1753,7 @@ package notify
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -1697,21 +1770,46 @@ func (f *fakeSlack) DM(_ context.Context, userID, text string) error {
 	return nil
 }
 
-func TestNotifier_SendsDM(t *testing.T) {
+func TestNotifier_BootstrapRecipe(t *testing.T) {
 	c := &fakeSlack{}
-	n := NewNotifier(c, "U123")
-	if err := n.Reauth(context.Background(), "https://auth/x"); err != nil {
+	n := NewNotifier(c, "U123", "https://auth-broker.aios.local")
+	if err := n.BootstrapRecipe(context.Background(), "tick-validation-failed"); err != nil {
 		t.Fatal(err)
 	}
-	if len(c.calls) != 1 || c.calls[0] != "U123:Tap to reauthenticate AIOS: https://auth/x" {
+	if len(c.calls) != 1 {
 		t.Fatalf("got %v", c.calls)
+	}
+	if !strings.Contains(c.calls[0], "pi /login") || !strings.Contains(c.calls[0], "tick-validation-failed") {
+		t.Fatalf("DM missing recipe or reason: %s", c.calls[0])
+	}
+}
+
+func TestNotifier_Warning(t *testing.T) {
+	c := &fakeSlack{}
+	n := NewNotifier(c, "U123", "https://auth-broker.aios.local")
+	if err := n.Warning(context.Background(), 25); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c.calls[0], "25") {
+		t.Fatalf("Warning DM missing age: %s", c.calls[0])
+	}
+}
+
+func TestNotifier_Recovered(t *testing.T) {
+	c := &fakeSlack{}
+	n := NewNotifier(c, "U123", "https://auth-broker.aios.local")
+	if err := n.Recovered(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(c.calls[0], "reauthenticated") {
+		t.Fatalf("Recovered DM unexpected: %s", c.calls[0])
 	}
 }
 
 func TestNotifier_PropagatesError(t *testing.T) {
 	c := &fakeSlack{err: errors.New("boom")}
-	n := NewNotifier(c, "U123")
-	if err := n.Reauth(context.Background(), "https://x"); err == nil {
+	n := NewNotifier(c, "U123", "https://x")
+	if err := n.Recovered(context.Background()); err == nil {
 		t.Fatal("expected error")
 	}
 }
@@ -1722,35 +1820,47 @@ func TestNotifier_PropagatesError(t *testing.T) {
 ```go
 package notify
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 type SlackClient interface {
 	DM(ctx context.Context, userID, text string) error
 }
 
 type Notifier struct {
-	client SlackClient
-	userID string
+	client    SlackClient
+	userID    string
+	brokerURL string
 }
 
-func NewNotifier(c SlackClient, userID string) *Notifier {
-	return &Notifier{client: c, userID: userID}
+func NewNotifier(c SlackClient, userID, brokerURL string) *Notifier {
+	return &Notifier{client: c, userID: userID, brokerURL: brokerURL}
 }
 
-func (n *Notifier) Reauth(ctx context.Context, url string) error {
-	return n.client.DM(ctx, n.userID, "Tap to reauthenticate AIOS: "+url)
+const recipeTemplate = `AIOS auth needs attention (reason: %s).
+
+On a laptop with pi installed:
+
+    pi  # then run /login interactively, complete OAuth in browser, then exit pi
+    just bootstrap-auth   # uploads ~/.pi/agent/auth.json to %s
+
+The agent queue is paused until the upload validates.`
+
+func (n *Notifier) BootstrapRecipe(ctx context.Context, reason string) error {
+	return n.client.DM(ctx, n.userID, fmt.Sprintf(recipeTemplate, reason, n.brokerURL))
 }
 
-func (n *Notifier) Warning(ctx context.Context, days int, url string) error {
-	return n.client.DM(ctx, n.userID, "AIOS auth expires in "+itoa(days)+"d. Tap to refresh now: "+url)
+func (n *Notifier) Warning(ctx context.Context, ageDays int) error {
+	return n.client.DM(ctx, n.userID,
+		fmt.Sprintf("AIOS auth bundle is %dd old — refresh at your convenience: re-run `pi /login` on laptop and `just bootstrap-auth` upload.", ageDays))
 }
 
 func (n *Notifier) Recovered(ctx context.Context) error {
 	return n.client.DM(ctx, n.userID, "AIOS reauthenticated, queue draining.")
 }
 ```
-
-(Plus a tiny `itoa` helper or `strconv.Itoa` import.)
 
 - [ ] **Step 3: Real client wrapping `slack-go/slack`**
 
@@ -1796,55 +1906,165 @@ func (r *RealSlack) DM(ctx context.Context, userID, text string) error {
 - Modify: `auth-broker/internal/server/server.go`
 - Create: `auth-broker/internal/server/leases.go`
 - Create: `auth-broker/internal/server/auth.go`
-- Create: `auth-broker/internal/server/reauth.go`
-- Create: `auth-broker/internal/server/server_test.go`
+- Create: `auth-broker/internal/server/revalidate.go`
+- Modify: `auth-broker/internal/server/server_test.go`
 
-Endpoints to add:
+Endpoints to add (B6 already added `POST /v1/auth/bundle`):
 - `POST /v1/leases/acquire` (body: `{holder}` → `{lease_id, expires_at}`)
 - `POST /v1/leases/release` (body: `{lease_id}` → 204)
-- `GET /v1/auth/bundle` (returns the verbatim auth.json bytes)
-- `POST /v1/admin/start-reauth` (returns `{verification_uri, user_code}`)
+- `GET /v1/auth/bundle` (returns the verbatim `auth.json` bytes — admin-token-guarded; only the operator may pull a bundle into a Job)
+- `POST /v1/admin/revalidate` (admin-token-guarded; runs the orchestrator's `OnBundleUploaded` path against the current bundle and returns `{state, message}`)
 - `GET /healthz`, `GET /metrics` (prometheus)
 
-- [ ] **Step 1: Failing tests for each handler**
+- [ ] **Step 1: Failing tests — one per handler, real httptest, real lease.Manager + store.Store**
 
-Sketch (engineer expands using `httptest`):
+`auth-broker/internal/server/server_test.go`:
 
 ```go
-func TestAcquireLease_HappyPath(t *testing.T) { ... }
-func TestReleaseLease_RejectsUnknownID(t *testing.T) { ... }
-func TestAuthBundle_ReturnsRawBundle(t *testing.T) { ... }
-func TestStartReauth_ReturnsURL(t *testing.T) { ... }
+package server
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/Diixtra/aios/auth-broker/internal/lease"
+	"github.com/Diixtra/aios/auth-broker/internal/store"
+)
+
+func TestAcquireLease_HappyPath(t *testing.T) {
+	srv := New(Config{Lease: lease.New(2, time.Hour)})
+	body, _ := json.Marshal(map[string]string{"holder": "agent-1"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/leases/acquire", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, body=%s", rec.Code, rec.Body)
+	}
+	var resp struct {
+		LeaseID   string    `json:"lease_id"`
+		ExpiresAt time.Time `json:"expires_at"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.LeaseID == "" {
+		t.Fatal("lease_id empty")
+	}
+}
+
+func TestReleaseLease_RejectsUnknownID(t *testing.T) {
+	srv := New(Config{Lease: lease.New(1, time.Hour)})
+	body, _ := json.Marshal(map[string]string{"lease_id": "nope"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/leases/release", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("got %d", rec.Code)
+	}
+}
+
+func TestAuthBundle_ReturnsRawBundle(t *testing.T) {
+	dir := t.TempDir()
+	st := store.New(filepath.Join(dir, "auth.json"))
+	if err := st.Write(store.Bundle{Raw: []byte(`{"chatgpt":{"type":"oauth"}}`)}); err != nil {
+		t.Fatal(err)
+	}
+	srv := New(Config{Store: st})
+	req := httptest.NewRequest(http.MethodGet, "/v1/auth/bundle", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d", rec.Code)
+	}
+	if rec.Body.String() != `{"chatgpt":{"type":"oauth"}}` {
+		t.Fatalf("got %q", rec.Body.String())
+	}
+}
+
+type stubOrchestrator struct{ err error }
+
+func (s *stubOrchestrator) OnBundleUploaded(_ context.Context) error { return s.err }
+
+func TestRevalidate_RunsOrchestratorAndReturnsState(t *testing.T) {
+	srv := New(Config{Orchestrator: &stubOrchestrator{}})
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/revalidate", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, body=%s", rec.Code, rec.Body)
+	}
+}
 ```
+
+(Adjust imports as needed; the `context` import is required for the stub. `Orchestrator` field on `Config` matches the interface defined below.)
 
 - [ ] **Step 2: Implement handlers in their respective files**
 
-Constructor pattern:
+Server constructor:
 
 ```go
+package server
+
+import (
+	"context"
+	"net/http"
+
+	"github.com/Diixtra/aios/auth-broker/internal/lease"
+	"github.com/Diixtra/aios/auth-broker/internal/store"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+type orchestrator interface {
+	OnBundleUploaded(ctx context.Context) error
+}
+
 type Config struct {
-	Lease  *lease.Manager
-	Store  *store.Store
-	Reauth *auth.Reauth
+	Lease        *lease.Manager
+	Store        *store.Store
+	Orchestrator orchestrator
+}
+
+type Server struct {
+	cfg Config
+	mux *http.ServeMux
 }
 
 func New(cfg Config) *Server {
 	s := &Server{cfg: cfg, mux: http.NewServeMux()}
-	s.mux.HandleFunc("/healthz", ...)
-	s.mux.HandleFunc("/metrics", promhttp.Handler().ServeHTTP)
+	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	s.mux.Handle("GET /metrics", promhttp.Handler())
 	s.mux.HandleFunc("POST /v1/leases/acquire", s.acquireLease)
 	s.mux.HandleFunc("POST /v1/leases/release", s.releaseLease)
 	s.mux.HandleFunc("GET /v1/auth/bundle", s.authBundle)
-	s.mux.HandleFunc("POST /v1/admin/start-reauth", s.startReauth)
+	s.mux.HandleFunc("POST /v1/admin/revalidate", s.revalidate)
+	// POST /v1/auth/bundle is registered by the BundleHandler from Task B6,
+	// wired in main.go alongside this server.
 	return s
 }
+
+func (s *Server) Handler() http.Handler { return s.mux }
 ```
 
-(Using Go 1.22+ method-prefix routing.)
+(Using Go 1.22+ method-prefix routing.) Per-handler implementations live in `leases.go`, `auth.go`, and `revalidate.go` respectively, each ~20-30 lines.
 
 - [ ] **Step 3: Tests pass**
 
 - [ ] **Step 4: Commit**
+
+```bash
+git add auth-broker/internal/server
+git commit -m "feat(auth-broker): HTTP endpoints for leases, bundle read, revalidate"
+```
 
 ### Task B12: K8s ServiceAccount auth middleware
 
@@ -2170,11 +2390,11 @@ func TestReauthSlash_CallsAuthBroker(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		captured <- string(body)
-		_, _ = w.Write([]byte(`{"verification_uri":"https://x"}`))
+		_, _ = w.Write([]byte(`{"state":"Healthy","message":"validated ok"}`))
 	}))
 	defer srv.Close()
 
-	h := NewReauthHandler(srv.URL+"/v1/admin/start-reauth", "admin-token")
+	h := NewReauthHandler(srv.URL+"/v1/admin/revalidate", "admin-token")
 	rec := httptest.NewRecorder()
 	form := url.Values{"text": []string{""}}
 	req := httptest.NewRequest(http.MethodPost, "/slack/reauth",
@@ -2203,6 +2423,11 @@ import (
 	"net/http"
 )
 
+// ReauthHandler proxies the Slack /aios-reauth slash command to the
+// auth-broker's revalidate endpoint and returns the resulting state to Slack.
+// Triggering revalidate also causes the broker to re-emit the bootstrap
+// recipe DM (per orchestrator contract in Task B8) so the user gets the
+// laptop instructions in their DM.
 type ReauthHandler struct {
 	authBrokerURL string
 	adminToken    string
@@ -2233,13 +2458,21 @@ func (h *ReauthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer res.Body.Close()
 	var body struct {
-		VerificationURI string `json:"verification_uri"`
+		State   string `json:"state"`
+		Message string `json:"message"`
 	}
 	_ = json.NewDecoder(res.Body).Decode(&body)
+	text := "AIOS auth state: " + body.State
+	if body.Message != "" {
+		text += " — " + body.Message
+	}
+	if body.State != "Healthy" {
+		text += "\n(Bootstrap recipe DM'd to you; re-run `pi /login` on laptop and `just bootstrap-auth`.)"
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"response_type": "ephemeral",
-		"text":          "Tap to reauthenticate AIOS: " + body.VerificationURI,
+		"text":          text,
 	})
 }
 ```
@@ -2250,7 +2483,7 @@ func (h *ReauthHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 ```go
 mux.Handle("POST /slack/reauth", slack.NewReauthHandler(
-    os.Getenv("AUTH_BROKER_URL")+"/v1/admin/start-reauth",
+    os.Getenv("AUTH_BROKER_URL")+"/v1/admin/revalidate",
     os.Getenv("AUTH_BROKER_ADMIN_TOKEN"),
 ))
 ```
@@ -2263,16 +2496,19 @@ This is configuration in Slack, not code. Document in `webhook/SLACK_APP.md` (if
 
 - [ ] **Step 6: Commit**
 
-### Task B17: End-to-end reauth integration test
+### Task B17: End-to-end bootstrap + lifecycle integration test
 
 **Files:**
-- Create: `auth-broker/test/e2e/reauth_test.go`
+- Create: `auth-broker/test/e2e/compose.yml`
+- Create: `auth-broker/test/e2e/smoke.sh`
+- Create: `auth-broker/test/e2e/bootstrap-auth.sh`
+- Create: `auth-broker/test/e2e/README.md`
 
-This is the gate: a real pi binary (in a container), a real Slack DM (to a test channel — not the user's personal DM), tap a real OpenAI device-flow URL.
+This is the gate: real pi binary (in a container), real Slack DM (to a test channel), real ChatGPT subscription bundle (test account, not production).
 
-> **Note:** to keep the test reproducible, use a *test* OpenAI account (not the production subscription) and a *test* Slack workspace. Do not run this against production secrets in CI.
+> **Note:** to keep the test reproducible, use a *test* OpenAI account (not the production subscription) and a *test* Slack workspace. Do not run this against production secrets in CI. The test is human-in-the-loop and runs locally — it is not a CI gate.
 
-- [ ] **Step 1: Compose-based harness that spins up auth-broker pointed at a test pi**
+- [ ] **Step 1: Compose-based harness that spins up auth-broker**
 
 `auth-broker/test/e2e/compose.yml`:
 
@@ -2294,7 +2530,34 @@ volumes:
   pi-state:
 ```
 
-- [ ] **Step 2: Manual smoke script**
+- [ ] **Step 2: Bootstrap helper script (used by `just bootstrap-auth` recipe later)**
+
+`auth-broker/test/e2e/bootstrap-auth.sh`:
+
+```bash
+#!/usr/bin/env bash
+# Uploads ~/.pi/agent/auth.json to the auth-broker.
+# Run after `pi /login` completes successfully on the laptop.
+set -euo pipefail
+
+BROKER_URL="${AUTH_BROKER_URL:?missing AUTH_BROKER_URL}"
+ADMIN_TOKEN="${AUTH_BROKER_ADMIN_TOKEN:?missing AUTH_BROKER_ADMIN_TOKEN}"
+BUNDLE="${PI_AUTH_BUNDLE:-$HOME/.pi/agent/auth.json}"
+
+if [[ ! -f "$BUNDLE" ]]; then
+  echo "Bundle not found: $BUNDLE" >&2
+  echo "Run 'pi' interactively, then '/login' to complete OAuth, then re-run this script." >&2
+  exit 1
+fi
+
+curl -sf -X POST \
+  -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -F "bundle=@${BUNDLE}" \
+  "${BROKER_URL%/}/v1/auth/bundle"
+echo "Uploaded $BUNDLE to $BROKER_URL"
+```
+
+- [ ] **Step 3: Manual smoke script**
 
 `auth-broker/test/e2e/smoke.sh`:
 
@@ -2304,32 +2567,62 @@ set -euo pipefail
 podman compose up -d
 trap 'podman compose down -v' EXIT
 
-# 1) Trigger reauth
-curl -sfX POST -H "Authorization: Bearer ${TEST_ADMIN_TOKEN}" \
-  http://localhost:18080/v1/admin/start-reauth | jq .
-
-# 2) Confirm Slack DM was sent (manually, by checking the test channel)
-# 3) Approve on phone
-# 4) Verify recovery
-sleep 5
+# 1) Confirm broker comes up healthy.
 curl -sf http://localhost:18080/healthz
-podman compose exec auth-broker /usr/local/bin/auth-broker --print-state || true
+
+# 2) Confirm initial state is Uninitialised — broker should DM bootstrap recipe.
+curl -sf -H "Authorization: Bearer ${TEST_ADMIN_TOKEN}" \
+  http://localhost:18080/v1/admin/revalidate | jq .
+echo ">>> Verify bootstrap-recipe DM arrived in test Slack channel <<<"
+
+# 3) Bootstrap from laptop (interactive).
+echo ">>> Run on laptop: pi  ->  /login  ->  exit"
+echo ">>> Then: AUTH_BROKER_URL=http://localhost:18080 \\"
+echo ">>>       AUTH_BROKER_ADMIN_TOKEN=${TEST_ADMIN_TOKEN} \\"
+echo ">>>       ./bootstrap-auth.sh"
+read -rp "Press Enter once bootstrap-auth.sh has run successfully... "
+
+# 4) Confirm state transitioned to Healthy.
+sleep 2
+state=$(curl -sf -H "Authorization: Bearer ${TEST_ADMIN_TOKEN}" \
+  http://localhost:18080/v1/admin/revalidate | jq -r .state)
+[[ "$state" == "Healthy" ]] || { echo "expected Healthy, got $state"; exit 1; }
+echo "State: $state ✓"
+
+# 5) Confirm Recovered DM arrived.
+echo ">>> Verify Recovered DM arrived in test Slack channel <<<"
+
+# 6) Bundle persistence across restart.
+podman compose restart auth-broker
+sleep 3
+state=$(curl -sf -H "Authorization: Bearer ${TEST_ADMIN_TOKEN}" \
+  http://localhost:18080/v1/admin/revalidate | jq -r .state)
+[[ "$state" == "Healthy" ]] || { echo "expected Healthy after restart, got $state"; exit 1; }
+echo "State after restart: $state ✓"
 ```
 
-- [ ] **Step 3: Document acceptance criteria in test file header**
+- [ ] **Step 4: Document acceptance criteria in `auth-broker/test/e2e/README.md`**
 
-The test is *manual* in this phase (because human-in-the-loop). Acceptance:
-- DM arrives in test Slack channel within 3s of `/v1/admin/start-reauth`
-- After tapping URL on phone, broker's `/healthz` continues 200, state transitions to `Healthy`
-- A subsequent `auth-broker` invocation with a fresh container picks up the new bundle without re-login
+```markdown
+# auth-broker e2e smoke
 
-- [ ] **Step 4: Run the smoke once, attach screenshots/logs to the spike findings doc**
+Run locally with a test OpenAI subscription and test Slack workspace. Acceptance:
 
-- [ ] **Step 5: Commit**
+1. Bootstrap-recipe DM arrives in test Slack channel within 3s of `POST /v1/admin/revalidate` against an empty bundle.
+2. After laptop-side `pi /login` + `bootstrap-auth.sh` upload, state transitions to Healthy and a Recovered DM arrives.
+3. Restarting the broker container preserves the bundle on the PVC; state remains Healthy without re-bootstrap.
+4. Tampering with `auth.json` to corrupt JSON and re-uploading returns HTTP 400 and leaves the previous bundle untouched.
+
+Not a CI gate — human-in-the-loop.
+```
+
+- [ ] **Step 5: Run the smoke once, attach output + screenshots to the spike findings doc**
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add auth-broker/test
-git commit -m "test(auth-broker): e2e reauth smoke harness"
+git commit -m "test(auth-broker): e2e bootstrap + lifecycle smoke harness"
 ```
 
 ---

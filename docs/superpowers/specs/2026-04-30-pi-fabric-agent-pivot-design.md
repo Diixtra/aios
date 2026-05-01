@@ -14,7 +14,7 @@ Replace the Claude Agent SDK path in the AIOS runtime with [pi](https://pi.dev) 
 2. Restore multiple agent types — each with its own system prompt, tooling, sandbox, and output destination.
 3. Reduce custom code by leaning on pi's agent loop and TickTick's native AI features.
 4. Preserve existing operator-spawns-Jobs orchestration model and per-Job sandboxing.
-5. Make reauthentication a phone-driven operation with no kubectl required.
+5. Notify the user on phone when auth needs attention; the reauth *action* runs on a TTY-backed laptop (Phase -1 A3 ruled out phone-only reauth in pi 0.70.6).
 
 ## Non-goals
 
@@ -104,28 +104,32 @@ Side channels (Job → external):
 - Surface metrics: `auth_broker_token_age_seconds`, `auth_broker_leases_active`, `auth_broker_lease_wait_seconds`, `auth_broker_refresh_total`, `auth_broker_state` (Healthy / Warning / Expired / Awaiting).
 - Drive the phone-based reauth flow (see below).
 
-**Phone-based reauth state machine:**
+**Auth lifecycle state machine (revised after Phase -1 A3):**
+
+Pi 0.70.6's `/login` is interactive-only — there is no programmatic device-flow hook the broker can drive. The broker therefore *holds* and *refreshes* an auth bundle bootstrapped on a TTY-backed laptop; it does not *initiate* logins.
 
 | State | Trigger | Action |
 |---|---|---|
-| Healthy | Routine refreshes succeed | None |
-| Warning | 7 days before expiry | Slack DM: "Approaching expiry, tap to reauthenticate now if convenient" |
-| Expired | Refresh fails / provider auth error | Slack DM (urgent): "AIOS paused — tap to resume" + operator pauses queue |
-| Awaiting | Device-flow polling in progress | Slack thread updates with progress |
-| Healthy | Device-flow returns token | Slack confirmation, operator unpauses queue |
+| Uninitialised | No bundle uploaded yet | Slack DM: bootstrap recipe (`pi /login` on laptop → `curl -F` upload to broker) |
+| Healthy | Periodic pi invocation succeeds; bundle younger than warn threshold | None |
+| Warning | Bundle older than warn threshold (default 23 days) | Slack DM: "AIOS auth approaching expiry — re-run `pi /login` on laptop and re-upload at your convenience" |
+| Expired | Periodic pi invocation fails with auth error | Slack DM (urgent) + operator pauses queue: "AIOS paused — re-run `pi /login` on laptop and re-upload to resume" |
+| Validating | Bundle just uploaded; broker running validation pi call | Slack thread update; operator queue stays paused |
+| Healthy | Validation succeeds | Slack confirmation; operator drains queue |
 
-**Reauth flow (no kubectl):**
+**Bootstrap / reauth flow (laptop only):**
 
-1. Auth-broker initiates the provider's supported login flow. Prefer device-flow if pi exposes it; otherwise use a broker-generated one-time URL that launches the same OAuth flow pi's `/login` uses.
-2. Receives a public verification URL or callback URL.
-3. Posts to the user's Slack DM (not a channel — reauth links are sensitive) with a single button.
-4. User taps the button on phone, completes provider login/allow.
-5. Auth-broker captures and persists the updated credentials, then validates them by listing/refreshing available pi models.
-6. Posts confirmation; operator drains queue.
+1. User runs `pi /login` on their laptop, completes OAuth in browser, exits pi.
+2. User uploads the resulting auth bundle to the broker — one-shot authenticated POST: `curl -F bundle=@~/.pi/agent/auth.json -H "Authorization: Bearer $AIOS_BOOTSTRAP_TOKEN" https://auth-broker.aios.<cluster>/v1/auth/bundle`.
+3. Broker stores the bundle on its PVC, runs a validation pi invocation (e.g. `pi --list-models` or a tiny `--mode json -p` ping), and transitions to Healthy.
+4. Steady state: broker invokes pi periodically (the existing weekly-refresh scheduler) — pi auto-refreshes tokens transparently in `auth.json` per the providers.md docs.
+5. When refresh fails or bundle is past the warn threshold, broker DMs the user with the recipe; user repeats steps 1-3 from any laptop with the project's `pi` installed.
 
-**Idempotency:** if a device-flow is already pending, repeated trigger requests return the same URL rather than initiating a second flow. Device codes have a short TTL (~15 min); after expiry, a fresh flow can be initiated.
+**A `just bootstrap-auth` recipe** in the repo root or `auth-broker/` documents the exact upload command so the user does not have to remember the curl invocation.
 
-**Emergency trigger:** Slack slash command `/aios-reauth` forces a fresh login URL on demand. Implemented as a thin handler in `webhook/` that calls auth-broker's `/admin/start-reauth` endpoint.
+**Phone reauth note:** out of scope for v1. If we later want phone-only reauth we add a web-TTY surface (e.g. `ttyd` over Tailscale) — see Risks. The Slack DM still goes to the phone; the action runs on laptop.
+
+**Emergency trigger:** Slack slash command `/aios-reauth` forces a re-validation cycle (re-run pi against the current bundle and update state) and re-emits the bootstrap recipe DM. Useful when the user wants a clean state check or the previous DM got lost.
 
 ### Operator (`operator/`) — modified
 
@@ -237,7 +241,7 @@ Pi extensions are TypeScript modules loaded explicitly with `-e` per Job. They c
   - Tag `#aios-meeting` → content-agent (meeting notes draft from transcript)
   - Tag `#aios-draft` → content-agent
   - Tag `#aios-triage` → triage-agent on demand
-- Adds Slack slash command handler for `/aios-reauth` (calls auth-broker `/admin/start-reauth`).
+- Adds Slack slash command handler for `/aios-reauth` (calls auth-broker `/admin/revalidate`).
 - Adds Grafana alert webhook for ops-agent.
 - Existing GitHub + Paperless handlers preserved.
 
@@ -383,12 +387,13 @@ Nothing breaks during transition. Old and new run side-by-side gated by `AgentCo
 - Verify usage/error events are observable enough for operator status and Slack reporting.
 - Decide: native pi auth bundle (preferred), custom provider extension, or API-key fallback. Update this spec with the chosen transport before Phase 0.
 
-**Phase 0 — auth-broker lands with phone-driven reauth (2-4 days)**
+**Phase 0 — auth-broker lands with laptop-bootstrap auth (2-4 days)**
 
-- Build, deploy, login once.
+- Build, deploy.
+- Bootstrap once: run `pi /login` on laptop, `curl -F bundle=@auth.json` upload.
 - Implement lease API and operator-side lease acquisition/release.
-- Verify Slack DM reauth flow end-to-end from phone.
-- Verify weekly refresh/validation works.
+- Verify Slack DM notification fires when the bundle ages past the warn threshold (synthetic clock advance in test).
+- Verify weekly refresh/validation works (broker invokes pi; pi auto-refreshes tokens; bundle rewrites observed on PVC).
 - No production impact — service exists but is dormant.
 
 **Phase 1 — code-pr agent rebuilt on pi (~1 week)**
@@ -436,7 +441,8 @@ Nothing breaks during transition. Old and new run side-by-side gated by `AgentCo
 | TickTick official MCP surface too narrow | Medium | Phase 4 grows by ~3 days | Phase 4 starts with 1-day spike; fallback is thin custom TickTick MCP |
 | Subscription concurrency cap lower than expected | Medium | Throughput pain | Auth-broker lease cap is configurable; priority queue absorbs the limit |
 | Subscription auth cannot be safely shared with headless Jobs | Medium | Cost premise or architecture changes | Phase -1 blocks buildout; fallback to API-key provider or custom provider extension |
-| Refresh token revoked by provider policy change | Low | All agents paused until reauth | Slack DM reauth flow is fast on phone; weekly validation keeps chain alive |
+| Refresh token revoked by provider policy change | Low | All agents paused until reauth | Slack DM with laptop-recipe; weekly validation keeps chain alive while user re-runs `pi /login` and re-uploads |
+| Phone-only reauth desired | Medium (UX preference) | Reauth requires laptop access | Defer; if load-bearing later, add a `ttyd` over Tailscale surface (Option B from A3 findings) |
 | Pi extension API changes (pre-1.0) | Medium | Local breakage on upgrade | Pin pi version; upgrade behind a feature flag; integration tests run against pinned pi |
 | Cost premise wrong (subscription not actually cheaper) | Low | Pivot wasted effort | Phase 1 produces real comparison data before full commitment |
 | Headless auth in K8s Job complexity underestimated | Medium | Phase 0 grows | Phase -1 proves the exact transport; no agents touch it until proven |
@@ -454,7 +460,7 @@ Nothing breaks during transition. Old and new run side-by-side gated by `AgentCo
 
 1. All 6 agent types ship and run successfully on real tasks for at least 2 weeks each.
 2. Monthly inference cost is measurably lower than the pre-pivot Anthropic API spend.
-3. Manual reauth events are <1/month on average and resolved <1 minute on phone.
+3. Manual reauth events are <1/month on average and resolved in under 2 minutes on a laptop (run `pi /login` + `just bootstrap-auth` upload).
 4. `ticktick-sync/` is removed; voice gateway preserved.
 5. Test coverage ≥80% on auth-broker, operator changes, pi extensions, and new MCP servers.
 6. No regression in PR quality between SDK and pi-based code-pr agent (judged on PRs from a 2-week side-by-side comparison).
