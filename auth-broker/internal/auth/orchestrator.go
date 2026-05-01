@@ -32,6 +32,12 @@ func NewOrchestrator(sm *Machine, v validator, n Notifier) *Orchestrator {
 	return &Orchestrator{sm: sm, validator: v, notifier: n, warnAgeDays: defaultWarnAgeDays}
 }
 
+// SetBundleAge wires the bundle-age probe used by Tick. Must be called before
+// the first Tick; the in-cluster wiring in main.go does this at startup.
+func (o *Orchestrator) SetBundleAge(fn func() (ageDays int, present bool)) {
+	o.bundleAge = fn
+}
+
 // OnBundleUploaded validates the freshly-stored bundle and transitions state.
 func (o *Orchestrator) OnBundleUploaded(ctx context.Context) error {
 	prev := o.sm.State()

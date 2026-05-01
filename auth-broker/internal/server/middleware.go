@@ -34,6 +34,12 @@ func requireSAToken(rv tokenReviewer, next http.Handler) http.Handler {
 	})
 }
 
+// AdminMiddleware is the exported wrapper around requireAdminToken so main.go
+// can wrap the bootstrap upload handler from outside the package.
+func AdminMiddleware(expected string, next http.Handler) http.Handler {
+	return requireAdminToken(expected, next)
+}
+
 func requireAdminToken(expected string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
