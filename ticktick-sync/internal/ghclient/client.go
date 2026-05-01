@@ -123,8 +123,8 @@ func (s *realIssueService) ListByLabel(ctx context.Context, owner, repo, label s
 
 func (s *realIssueService) Create(ctx context.Context, owner, repo string, req CreateIssueRequest) (*Issue, error) {
 	ghReq := &github.IssueRequest{
-		Title:  github.String(req.Title),
-		Body:   github.String(req.Body),
+		Title:  github.Ptr(req.Title),
+		Body:   github.Ptr(req.Body),
 		Labels: &req.Labels,
 	}
 	issue, _, err := s.gh.Issues.Create(ctx, owner, repo, ghReq)
@@ -146,7 +146,7 @@ func (s *realIssueService) Create(ctx context.Context, owner, repo string, req C
 
 func (s *realIssueService) Close(ctx context.Context, owner, repo string, number int) error {
 	_, _, err := s.gh.Issues.Edit(ctx, owner, repo, number, &github.IssueRequest{
-		State: github.String("closed"),
+		State: github.Ptr("closed"),
 	})
 	if err != nil {
 		return fmt.Errorf("close issue #%d: %w", number, err)
@@ -156,7 +156,7 @@ func (s *realIssueService) Close(ctx context.Context, owner, repo string, number
 
 func (s *realIssueService) UpdateBody(ctx context.Context, owner, repo string, number int, body string) error {
 	_, _, err := s.gh.Issues.Edit(ctx, owner, repo, number, &github.IssueRequest{
-		Body: github.String(body),
+		Body: github.Ptr(body),
 	})
 	if err != nil {
 		return fmt.Errorf("update issue #%d body: %w", number, err)

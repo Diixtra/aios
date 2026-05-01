@@ -16,6 +16,10 @@ dev = [
     "pytest==9.0.3",
     "pytest-asyncio==1.3.0",
     "httpx",
+    # slack-sdk's async client lazily imports aiohttp; tests that import
+    # slack_sdk.web.async_client need it available even though our prod code
+    # uses the sync client.
+    "aiohttp==3.13.2",
 ]
 
 [build-system]

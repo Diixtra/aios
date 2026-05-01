@@ -94,7 +94,7 @@ func TestPollTickTick_AlreadySynced(t *testing.T) {
 		tasks: []ticktick.Task{
 			{ID: "t1", ProjectID: "p1", Title: "Fix auth bug",
 				Content: "Details\n\n<!-- github:Diixtra/aios#42 -->",
-				Tags: []string{"agent"}, Status: 0},
+				Tags:    []string{"agent"}, Status: 0},
 		},
 	}
 	gh := newMockGitHub()
