@@ -111,7 +111,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "processed document %d", doc.ID)
+	_, _ = fmt.Fprintf(w, "processed document %d", doc.ID)
 }
 
 // applyTags resolves suggested tag names to IDs and updates the document.
@@ -184,7 +184,7 @@ func (h *Handler) autoLink(ctx context.Context, doc *document.Document) (int, er
 	if err != nil {
 		return 0, fmt.Errorf("search request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var searchResp searchResponse
 	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
