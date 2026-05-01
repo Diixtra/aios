@@ -1,8 +1,23 @@
 package server
 
-import "net/http"
+import (
+	"context"
+	"net/http"
 
-type Config struct{}
+	"github.com/Diixtra/aios/auth-broker/internal/lease"
+	"github.com/Diixtra/aios/auth-broker/internal/store"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+)
+
+type orchestrator interface {
+	OnBundleUploaded(ctx context.Context) error
+}
+
+type Config struct {
+	Lease        *lease.Manager
+	Store        *store.Store
+	Orchestrator orchestrator
+}
 
 type Server struct {
 	cfg Config
@@ -11,10 +26,19 @@ type Server struct {
 
 func New(cfg Config) *Server {
 	s := &Server{cfg: cfg, mux: http.NewServeMux()}
-	s.mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+	s.mux.Handle("GET /metrics", promhttp.Handler())
+	s.mux.HandleFunc("POST /v1/leases/acquire", s.acquireLease)
+	s.mux.HandleFunc("POST /v1/leases/release", s.releaseLease)
+	s.mux.HandleFunc("GET /v1/auth/bundle", s.authBundle)
+	s.mux.HandleFunc("POST /v1/auth/bundle/post-run", s.postRunBundle)
+	s.mux.HandleFunc("POST /v1/admin/revalidate", s.revalidate)
+	// POST /v1/auth/bundle (bootstrap upload) is registered separately by main.go
+	// alongside this server, since it is admin-token-guarded while the rest
+	// of the surface is SA-token-guarded. See cmd/main.go.
 	return s
 }
 
