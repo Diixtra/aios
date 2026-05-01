@@ -38,6 +38,12 @@ type RuntimeConfig struct {
 	Model string `json:"model,omitempty"`
 	// +kubebuilder:default=200000
 	MaxTokens int `json:"maxTokens,omitempty"`
+	// Engine selects which agent runtime executes the task. "claude-sdk" uses
+	// the Anthropic Claude Agent SDK directly; "pi" routes through the
+	// pi-coding-agent + auth-broker + fabric-patterns stack.
+	// +kubebuilder:validation:Enum=claude-sdk;pi
+	// +kubebuilder:default="claude-sdk"
+	Engine string `json:"engine,omitempty"`
 }
 
 type AuthConfig struct {
