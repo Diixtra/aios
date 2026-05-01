@@ -46,6 +46,17 @@ cd webhook && go test ./...
 cd operator && go test ./...
 ```
 
+### Pre-commit hooks
+
+Install once after cloning:
+
+```sh
+mise install
+lefthook install
+```
+
+This wires the org-wide hooks (gitleaks + biome + ruff + gofmt + Conventional Commits) defined in `lefthook.yml`. Hooks run on developer machines; CI re-runs them as a safety net.
+
 ## Deployment
 
 Deployed on a homelab K8s cluster (Forge) via Flux GitOps. Manifests in `k8s/`.

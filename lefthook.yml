@@ -1,0 +1,61 @@
+# Diixtra org-wide pre-commit hooks (multi-language: TS + Python + Go).
+# Source: Diixtra/diixtra-forge/templates/lefthook.yml
+# Run `lefthook install` after `mise install`.
+# Slot 1: fast (<2s) staged-file checks. Anything slower belongs in CI.
+# Reference: docs/code-quality/slot-allocation.md in diixtra-forge.
+
+pre-commit:
+  parallel: true
+  commands:
+
+    # Cross-cutting: secret scan on staged files only
+    gitleaks:
+      glob: "*"
+      run: |
+        if command -v gitleaks >/dev/null; then
+          gitleaks protect --staged --redact --no-banner
+        else
+          echo "gitleaks not installed. Add via mise: mise use -g gitleaks@latest"
+          exit 1
+        fi
+
+    # TS/JS: lint + format on staged files
+    biome:
+      glob: "*.{ts,tsx,js,jsx,json,jsonc}"
+      run: bunx biome check --no-errors-on-unmatched --files-ignore-unknown=true {staged_files}
+      skip:
+        - merge
+        - rebase
+
+    # Python: lint + format on staged files
+    ruff:
+      glob: "*.py"
+      run: |
+        uv run ruff check --fix {staged_files} && uv run ruff format {staged_files}
+      skip:
+        - merge
+        - rebase
+
+    # Go: format + vet on staged files (golangci-lint full run is in CI)
+    gofmt:
+      glob: "*.go"
+      run: |
+        gofmt -l -w {staged_files}
+        if [ -n "$(gofmt -l {staged_files})" ]; then exit 1; fi
+      skip:
+        - merge
+        - rebase
+
+commit-msg:
+  commands:
+    conventional-commits:
+      run: |
+        commit_msg=$(cat {1})
+        # Skip merge/revert
+        echo "$commit_msg" | grep -qE '^(Merge|Revert)' && exit 0
+        # Conventional Commits regex
+        echo "$commit_msg" | grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?!?: .+' || {
+          echo "Commit message must follow Conventional Commits format."
+          echo "Example: 'feat(ci): add lefthook config'"
+          exit 1
+        }

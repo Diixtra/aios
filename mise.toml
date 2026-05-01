@@ -1,0 +1,6 @@
+[tools]
+lefthook = "1.10"
+gitleaks = "8.21"
+bun = "1.3.13"
+go = "1.24"
+uv = "0.5"
