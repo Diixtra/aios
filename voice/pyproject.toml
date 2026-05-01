@@ -19,7 +19,7 @@ dev = [
     # slack-sdk's async client lazily imports aiohttp; tests that import
     # slack_sdk.web.async_client need it available even though our prod code
     # uses the sync client.
-    "aiohttp==3.13.2",
+    "aiohttp==3.13.5",
 ]
 
 [build-system]
