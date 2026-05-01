@@ -58,7 +58,7 @@ This phase is investigation, not feature code. It produces a written findings do
 
 **Output of phase:**
 - `docs/superpowers/spikes/2026-04-30-pi-auth-transport-findings.md` — concrete answers to the questions below
-- `auth-broker-spike/` — disposable directory with a `Dockerfile`, `compose.yml`, and a `Makefile` reproducing the spike experiments
+- `auth-broker-spike/` — disposable directory with a `Dockerfile`, `compose.yml`, and a `justfile` reproducing the spike experiments
 - A go/no-go decision: are we proceeding with brokered auth as designed, or pivoting (e.g. fall back to OpenAI API key)?
 
 **Time budget:** 1-2 days.
@@ -68,7 +68,7 @@ This phase is investigation, not feature code. It produces a written findings do
 **Files:**
 - Create: `auth-broker-spike/Dockerfile`
 - Create: `auth-broker-spike/compose.yml`
-- Create: `auth-broker-spike/Makefile`
+- Create: `auth-broker-spike/justfile`
 - Create: `auth-broker-spike/README.md`
 
 - [ ] **Step 1: Write a minimal Dockerfile that installs pi in a clean Linux image with no TTY**
@@ -108,22 +108,31 @@ volumes:
   pi-state:
 ```
 
-- [ ] **Step 3: Write a Makefile with reproducible targets**
+- [ ] **Step 3: Write a justfile with reproducible recipes**
 
-`auth-broker-spike/Makefile`:
+`auth-broker-spike/justfile`:
 
-```makefile
-.PHONY: build shell login-export verify-bundle inspect-state run-prompt clean
+```just
+# Spike harness for pi auth-transport investigation.
+# Diixtra convention: just (not make), podman (not docker).
+
+default:
+    @just --list
+
 build:
-	docker compose build
+    podman compose build
+
 shell:
-	docker compose run --rm pi bash
+    podman compose run --rm pi bash
+
 inspect-state:
-	docker compose run --rm pi bash -c 'ls -la $$PI_CODING_AGENT_DIR && find $$PI_CODING_AGENT_DIR -type f -exec sha256sum {} \;'
+    podman compose run --rm pi bash -c 'ls -la $PI_CODING_AGENT_DIR && find $PI_CODING_AGENT_DIR -type f -exec sha256sum {} \;'
+
 run-prompt:
-	docker compose run --rm pi bash -c 'pi --mode json --no-extensions --no-skills --no-prompt-templates --no-context-files -p "Reply with the single token PONG and nothing else."'
+    podman compose run --rm pi bash -c 'pi --mode json --no-extensions --no-skills --no-prompt-templates --no-context-files -p "Reply with the single token PONG and nothing else."'
+
 clean:
-	docker compose down -v
+    podman compose down -v
 ```
 
 - [ ] **Step 4: Write a README explaining the spike's purpose and how to run each experiment**
@@ -149,11 +158,11 @@ docs/superpowers/spikes/2026-04-30-pi-auth-transport-findings.md.
 - [ ] **Step 5: Build and verify the image runs**
 
 ```bash
-make -C auth-broker-spike build
-make -C auth-broker-spike shell <<< 'pi --version'
+( cd auth-broker-spike && just build )
+podman compose -f auth-broker-spike/compose.yml run --rm pi pi --version
 ```
 
-Expected: pi version banner printed.
+Expected: pi version banner printed. (The `just shell` recipe is interactive — for the verification step we invoke `pi --version` directly via `podman compose run`.)
 
 - [ ] **Step 6: Commit**
 
@@ -190,7 +199,7 @@ git commit -m "spike: scaffold pi auth-transport investigation harness"
 - [ ] **Step 2: Run pi inside the container long enough to populate PI_CODING_AGENT_DIR (will fail at API call but should write skeleton state)**
 
 ```bash
-docker compose -f auth-broker-spike/compose.yml run --rm pi bash -c '
+podman compose -f auth-broker-spike/compose.yml run --rm pi bash -c '
   echo "no" | pi --mode json -p "ping" 2>&1 || true
   echo "--- after run ---"
   find $PI_CODING_AGENT_DIR -type f
@@ -200,7 +209,7 @@ docker compose -f auth-broker-spike/compose.yml run --rm pi bash -c '
 - [ ] **Step 3: Capture the directory layout**
 
 ```bash
-make -C auth-broker-spike inspect-state | tee /tmp/pi-state-empty.txt
+( cd auth-broker-spike && just inspect-state ) | tee /tmp/pi-state-empty.txt
 ```
 
 - [ ] **Step 4: Document findings in `## A2` section**
@@ -226,7 +235,7 @@ git commit -m "spike(A2): document PI_CODING_AGENT_DIR layout"
 - [ ] **Step 1: Attempt non-interactive login and observe failure mode**
 
 ```bash
-docker compose -f auth-broker-spike/compose.yml run --rm pi \
+podman compose -f auth-broker-spike/compose.yml run --rm pi \
   bash -c 'pi --mode json -p "/login" 2>&1' | tee /tmp/headless-login.log
 ```
 
@@ -272,7 +281,7 @@ ls -la ~/.aios-spike-pi-state/
 - [ ] **Step 2: Mount the bundle into the container and run a real prompt**
 
 ```bash
-docker run --rm -v ~/.aios-spike-pi-state:/pi-state:ro \
+podman run --rm -v ~/.aios-spike-pi-state:/pi-state:ro \
   -e PI_CODING_AGENT_DIR=/pi-state \
   aios-spike/pi:latest \
   pi --mode json --no-extensions --no-skills --no-prompt-templates --no-context-files \
@@ -288,7 +297,7 @@ If pi must write to PI_CODING_AGENT_DIR (e.g. update `auth.json` after refresh),
 
 ```bash
 cp -r ~/.aios-spike-pi-state /tmp/before
-docker run --rm -v ~/.aios-spike-pi-state:/pi-state \
+podman run --rm -v ~/.aios-spike-pi-state:/pi-state \
   -e PI_CODING_AGENT_DIR=/pi-state \
   aios-spike/pi:latest \
   pi --mode json -p "ping" >/dev/null
@@ -318,15 +327,15 @@ git commit -m "spike(A4): document auth bundle portability"
 - [ ] **Step 1: Run two parallel containers from the same bundle**
 
 ```bash
-docker run -d --name pi-a -v ~/.aios-spike-pi-state:/pi-state \
+podman run -d --name pi-a -v ~/.aios-spike-pi-state:/pi-state \
   -e PI_CODING_AGENT_DIR=/pi-state aios-spike/pi:latest \
   pi --mode json -p "Count to 3 slowly." > /tmp/pi-a.jsonl &
-docker run -d --name pi-b -v ~/.aios-spike-pi-state:/pi-state \
+podman run -d --name pi-b -v ~/.aios-spike-pi-state:/pi-state \
   -e PI_CODING_AGENT_DIR=/pi-state aios-spike/pi:latest \
   pi --mode json -p "Count to 3 slowly." > /tmp/pi-b.jsonl &
 wait
-docker logs pi-a; docker logs pi-b
-docker rm pi-a pi-b
+podman logs pi-a; podman logs pi-b
+podman rm pi-a pi-b
 ```
 
 - [ ] **Step 2: Inspect outcomes**
@@ -357,7 +366,7 @@ sha256sum ~/.aios-spike-pi-state/auth.json > /tmp/bundle-before.sha
 # wait for short-lived access token to expire (typically 1h); or force by editing
 # auth.json's expiry to a past time (back up first)
 for i in 1 2 3; do
-  docker run --rm -v ~/.aios-spike-pi-state:/pi-state \
+  podman run --rm -v ~/.aios-spike-pi-state:/pi-state \
     -e PI_CODING_AGENT_DIR=/pi-state aios-spike/pi:latest \
     pi --mode json -p "ping $i" >/dev/null
 done
@@ -369,7 +378,7 @@ diff /tmp/bundle-before.sha /tmp/bundle-after.sha || echo "BUNDLE ROTATED"
 
 ```bash
 # while pi runs, monitor with inotifywait in a sidecar
-docker run -d --rm -v ~/.aios-spike-pi-state:/pi-state -e PI_CODING_AGENT_DIR=/pi-state \
+podman run -d --rm -v ~/.aios-spike-pi-state:/pi-state -e PI_CODING_AGENT_DIR=/pi-state \
   aios-spike/pi:latest \
   bash -c 'apt-get update >/dev/null && apt-get install -y inotify-tools >/dev/null && \
            inotifywait -m -e create -e moved_to /pi-state/'
@@ -395,19 +404,19 @@ Record:
 
 ```bash
 # Start mitmproxy in transparent mode in a sidecar
-docker run --rm -d --name spike-mitm \
+podman run --rm -d --name spike-mitm \
   -v "$PWD/mitm-certs:/home/mitmproxy/.mitmproxy" \
   -p 8080:8080 mitmproxy/mitmproxy mitmdump --set block_global=false
 # Trust mitm CA in pi container
-docker run --rm \
+podman run --rm \
   -v ~/.aios-spike-pi-state:/pi-state \
   -v "$PWD/mitm-certs:/certs" \
   -e PI_CODING_AGENT_DIR=/pi-state \
-  -e HTTPS_PROXY=http://host.docker.internal:8080 \
+  -e HTTPS_PROXY=http://host.containers.internal:8080 \
   -e SSL_CERT_FILE=/certs/mitmproxy-ca-cert.pem \
   aios-spike/pi:latest \
   pi --mode json -p "ping" 2>&1 | tee /tmp/pi-with-mitm.jsonl
-docker stop spike-mitm
+podman stop spike-mitm
 ```
 
 - [ ] **Step 2: Extract URL + auth-header summary from the mitm log**
@@ -2002,7 +2011,7 @@ CMD ["/usr/local/bin/auth-broker"]
 - [ ] **Step 2: Verify image builds**
 
 ```bash
-docker build -t aios/auth-broker:dev auth-broker/
+podman build -t aios/auth-broker:dev auth-broker/
 ```
 
 - [ ] **Step 3: Commit**
@@ -2292,8 +2301,8 @@ volumes:
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-docker compose up -d
-trap 'docker compose down -v' EXIT
+podman compose up -d
+trap 'podman compose down -v' EXIT
 
 # 1) Trigger reauth
 curl -sfX POST -H "Authorization: Bearer ${TEST_ADMIN_TOKEN}" \
@@ -2304,7 +2313,7 @@ curl -sfX POST -H "Authorization: Bearer ${TEST_ADMIN_TOKEN}" \
 # 4) Verify recovery
 sleep 5
 curl -sf http://localhost:18080/healthz
-docker compose exec auth-broker /usr/local/bin/auth-broker --print-state || true
+podman compose exec auth-broker /usr/local/bin/auth-broker --print-state || true
 ```
 
 - [ ] **Step 3: Document acceptance criteria in test file header**
@@ -2378,7 +2387,7 @@ type RuntimeConfig struct {
 
 ```bash
 cd operator
-make generate    # or `controller-gen object` per Makefile
+make generate    # operator/Makefile is kubebuilder-generated; we invoke its existing targets here (do not migrate to just in this plan)
 make manifests   # regen CRD YAML
 ```
 
@@ -2498,8 +2507,8 @@ Pin to the version captured in the spike findings header.
 - [ ] **Step 3: Verify image build succeeds and pi is present**
 
 ```bash
-docker build -t aios/runtime:dev runtime/
-docker run --rm aios/runtime:dev pi --version
+podman build -t aios/runtime:dev runtime/
+podman run --rm aios/runtime:dev pi --version
 ```
 
 Expected: pi version printed.
