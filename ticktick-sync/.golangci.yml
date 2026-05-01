@@ -1,0 +1,30 @@
+version: "2"
+
+run:
+  timeout: 5m
+  allow-parallel-runners: true
+
+linters:
+  default: none
+  enable:
+    - copyloopvar
+    - errcheck
+    - govet
+    - ineffassign
+    - misspell
+    - staticcheck
+    - unconvert
+    - unparam
+    - unused
+  exclusions:
+    rules:
+      # Test files use idiomatic patterns that trigger style linters benignly:
+      # unchecked errors on cleanup helpers (os.Unsetenv, AddMapping in fixtures, etc.).
+      - path: "_test\\.go"
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

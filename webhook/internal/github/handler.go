@@ -72,7 +72,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	// Validate signature
 	signature := r.Header.Get("X-Hub-Signature-256")
@@ -85,7 +85,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	eventType := r.Header.Get("X-GitHub-Event")
 	if eventType != "issues" {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "ignored event")
+		_, _ = fmt.Fprint(w, "ignored event")
 		return
 	}
 
@@ -98,7 +98,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Only handle labeled action with "agent" label
 	if event.Action != "labeled" || event.Label.Name != "agent" {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "ignored event")
+		_, _ = fmt.Fprint(w, "ignored event")
 		return
 	}
 
