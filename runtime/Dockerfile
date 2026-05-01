@@ -33,6 +33,10 @@ RUN curl -fsSL https://github.com/danielmiessler/fabric/releases/latest/download
     -o /usr/local/bin/fabric \
     && chmod +x /usr/local/bin/fabric
 
+# Install pi-coding-agent globally so the `pi` CLI is on PATH for both
+# claude-sdk and pi engines. Pinned to 0.70.6 to match auth-broker (Spike A2).
+RUN npm install -g @mariozechner/pi-coding-agent@0.70.6
+
 WORKDIR /app
 
 # Copy built artifacts and production dependencies
