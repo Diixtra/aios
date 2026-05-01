@@ -71,7 +71,9 @@ func main() {
 	mux.Handle("/webhook/github", webhook.NewHandler([]byte(cfg.GitHubWebhookSecret), engine))
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		if _, err := w.Write([]byte("ok")); err != nil {
+			slog.Warn("healthz write failed", "error", err)
+		}
 	})
 
 	srv := &http.Server{Addr: ":8080", Handler: mux}
@@ -106,7 +108,9 @@ func main() {
 		case sig := <-sigCh:
 			slog.Info("received signal, shutting down", "signal", sig)
 			cancel()
-			srv.Shutdown(context.Background())
+			if err := srv.Shutdown(context.Background()); err != nil {
+				slog.Warn("http server shutdown failed", "error", err)
+			}
 			if err := store.Flush(context.Background()); err != nil {
 				slog.Error("failed to flush state on shutdown", "error", err)
 			}

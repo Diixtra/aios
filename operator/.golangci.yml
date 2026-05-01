@@ -33,6 +33,15 @@ linters:
         linters:
           - dupl
           - lll
+      # Test files use idiomatic patterns that trigger style linters benignly:
+      # repeated string literals as test data, unchecked errors on cleanup helpers,
+      # ineffectual assignments in mock setup, slice prealloc on small fixtures.
+      - path: "_test\\.go"
+        linters:
+          - goconst
+          - errcheck
+          - ineffassign
+          - prealloc
   settings:
     revive:
       rules:
