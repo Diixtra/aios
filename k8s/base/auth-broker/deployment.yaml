@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-broker
+  namespace: aios
+  labels:
+    app: auth-broker
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # PVC is RWO; avoid two pods racing for it
+  selector:
+    matchLabels:
+      app: auth-broker
+  template:
+    metadata:
+      labels:
+        app: auth-broker
+    spec:
+      serviceAccountName: auth-broker
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: broker
+          image: ghcr.io/diixtra/aios-auth-broker:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - { name: AUTH_BROKER_LISTEN_ADDR, value: ":8080" }
+            - { name: AUTH_BROKER_PI_BINARY, value: /usr/local/bin/pi }
+            - { name: AUTH_BROKER_PI_DIR, value: /pi-state }
+            - { name: AUTH_BROKER_LEASE_CAP, value: "4" }
+            - { name: AUTH_BROKER_LEASE_TTL, value: "30m" }
+            - { name: AUTH_BROKER_REFRESH_INTERVAL, value: "168h" }
+          envFrom:
+            - secretRef:
+                name: auth-broker-secrets # filled by OnePasswordItem
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - { name: pi-state, mountPath: /pi-state }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: pi-state
+          persistentVolumeClaim:
+            claimName: auth-broker-pi-state
+        - name: tmp
+          emptyDir: {}
