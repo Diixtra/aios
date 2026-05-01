@@ -1,0 +1,12 @@
+[4m>>>> Executing external compose provider "/opt/homebrew/bin/docker-compose". Please see podman-compose(1) for how to disable this message. <<<<
+
+[0m Container auth-broker-spike-pi-run-a264ed85218e Creating 
+ Container auth-broker-spike-pi-run-a264ed85218e Created 
+{"type":"session","version":3,"id":"019de206-0828-75cd-9a41-e25f6aba29c0","timestamp":"2026-05-01T05:32:19.369Z","cwd":"/work"}
+No API key found for the selected model.
+
+Use /login to log into a provider via OAuth or API key. See:
+  /usr/local/lib/node_modules/@mariozechner/pi-coding-agent/docs/providers.md
+  /usr/local/lib/node_modules/@mariozechner/pi-coding-agent/docs/models.md
+
+Error: executing /opt/homebrew/bin/docker-compose -f /Users/james/Kazcloud/Github/aios/auth-broker-spike/compose.yml run --rm pi bash -c pi --mode json -p "/login" 2>&1: exit status 1
