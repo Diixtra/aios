@@ -1,0 +1,16 @@
+services:
+  auth-broker:
+    build: ../..
+    image: aios/auth-broker:e2e
+    environment:
+      AUTH_BROKER_PI_BINARY: /usr/local/bin/pi
+      AUTH_BROKER_PI_DIR: /pi-state
+      AUTH_BROKER_LEASE_CAP: "2"
+      AUTH_BROKER_SLACK_TOKEN: ${TEST_SLACK_TOKEN}
+      AUTH_BROKER_SLACK_DM_USER_ID: ${TEST_SLACK_USER}
+      AUTH_BROKER_ADMIN_TOKEN: ${TEST_ADMIN_TOKEN}
+    volumes:
+      - pi-state:/pi-state
+    ports: ["18080:8080"]
+volumes:
+  pi-state:
