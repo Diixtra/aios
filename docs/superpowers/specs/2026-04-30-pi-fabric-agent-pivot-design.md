@@ -26,12 +26,14 @@ Replace the Claude Agent SDK path in the AIOS runtime with [pi](https://pi.dev) 
 ## Constraints
 
 1. **One subscription, one rate-limit bucket.** All agents share one ChatGPT account's concurrency. Default cap: 4 concurrent pi Jobs, configurable.
-2. **Headless OAuth.** K8s Jobs cannot perform interactive login. Auth state must be owned by a long-running pod and exposed to Jobs as a short-lived, read-only auth bundle or through a brokered provider.
-3. **Pi provider reality.** Pi supports ChatGPT subscription login, custom providers, print mode, JSON mode, RPC mode, extensions, and skills. It does **not** ship MCP, sub-agents, permission prompts, or a daemon agent pool; MCP and policy enforcement must be extensions or external process/container controls.
-4. **Subscription API uncertainty.** Pi's ChatGPT subscription transport may not be identical to OpenAI's public `/v1/chat/completions`. Treat OpenAI-compatible proxying of subscription traffic as a spike item, not an assumption.
-5. **TickTick MCP requires premium.** Confirmed available to the user.
-6. **Diixtra coding guidelines apply.** 80% test coverage floor per service. Test-first for business logic and security-sensitive paths. No mocking services we own.
-7. **Refresh tokens expire.** Without active use, OpenAI refresh tokens can lapse. Auth-broker must refresh proactively and surface reauth before expiry.
+2. **Headless OAuth.** K8s Jobs cannot perform interactive login. Auth state must be owned by a long-running pod. Phase -1 A3 ruled out programmatic device-flow init in pi 0.70.6: bootstrap is laptop-only, broker holds and refreshes the bundle.
+3. **Bundle is writeable, not transferable as-RO.** Pi 0.70.6 mutates `auth.json` per inference call (access-token rotation; A4 confirmed). The broker's PVC and any per-Job copy of the bundle MUST be RW. Read-only mounts crash pi at startup (sessions/ mkdir).
+4. **Pi provider routing requires qualified model ids.** A4 confirmed `--model openai-codex/<id>` is mandatory; bare ids (e.g. `gpt-5.4`) misroute to other providers and fail. AgentConfig must store and pass models in the qualified form; operator validates at Job-build time.
+5. **Pi provider reality.** Pi supports ChatGPT subscription login, custom providers, print mode, JSON mode, RPC mode, extensions, and skills. It does **not** ship MCP, sub-agents, permission prompts, or a daemon agent pool; MCP and policy enforcement must be extensions or external process/container controls.
+6. **Anthropic OAuth is no longer subscription-effective for third-party apps.** A4 confirmed Anthropic now serves Claude Pro/Max OAuth tokens with `"third-party apps draw from your extra usage, not your plan limits"` — i.e. metered API extra-usage, not subscription. Strengthens the case for Codex; rules out Anthropic-OAuth as a fallback. Anthropic API key remains a paid fallback if Codex breaks.
+7. **TickTick MCP requires premium.** Confirmed available to the user.
+8. **Diixtra coding guidelines apply.** 80% test coverage floor per service. Test-first for business logic and security-sensitive paths. No mocking services we own.
+9. **Refresh tokens expire.** Without active use, OpenAI refresh tokens can lapse. Auth-broker must refresh proactively and surface reauth before expiry.
 
 ## Approach
 
@@ -140,6 +142,7 @@ Pi 0.70.6's `/login` is interactive-only — there is no programmatic device-flo
   - SYSTEM.md path (relative to fabric-patterns volume)
   - ToolPolicy ref
   - Container image (default: shared `runtime` image)
+  - **Pi model in qualified `provider/id` form** (e.g. `openai-codex/gpt-5.4`). Phase -1 A4 confirmed bare ids route to the wrong provider; the operator validates this at Job-build time and rejects bare ids early.
   - MCP servers to mount
   - Env vars (incl. agent-specific Exa API key, Obsidian REST URL, etc.)
   - Output destination (gh PR / vault path / issue comment / Slack thread)
@@ -149,7 +152,7 @@ Pi 0.70.6's `/login` is interactive-only — there is no programmatic device-flo
 - `phase`: `Pending | Running | Completed | Failed | Blocked`
 - `agentType`: copied from spec for query convenience
 - `outputRef`: PR URL / vault path / issue # / etc.
-- `tokensUsed`: extracted from pi JSON events/provider usage when available (best-effort)
+- `tokensUsed` / `costUSD`: extracted from pi JSON events. **Treat as advisory, not authoritative**: Phase -1 A4 confirmed pi reports notional API-equivalent cost for ChatGPT-Codex subscription calls (the user is billed against subscription quota, not the displayed dollar amount). Useful for *relative* trend monitoring (which agent type burns more), not for actual subscription accounting.
 - `leaseId`: auth-broker lease held by the Job, for debugging/recovery
 - `reauthBlocked` bool: set when auth-broker reports provider auth failure globally
 

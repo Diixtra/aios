@@ -1324,8 +1324,15 @@ import (
 )
 
 // Validator runs a cheap pi command against the configured PI dir to confirm
-// the bundle authenticates. We use --list-models because it touches the
-// provider for auth checks but does not bill an inference call.
+// the bundle parses and pi can read it. We use --list-models because it does
+// not require provider connectivity (model list is bundled in pi).
+//
+// CAVEAT (Spike A4): --list-models does NOT verify the configured agent model
+// will actually authenticate at inference time — provider routing depends on
+// the model id form (e.g. "openai-codex/gpt-5.4" vs bare "gpt-5.4"). End-to-end
+// auth verification happens lazily on the first agent inference call. The
+// orchestrator (B8) will transition to Expired and DM the user if a real
+// inference call returns an auth error.
 type Validator struct {
 	piBinary string
 	piDir    string
@@ -2720,7 +2727,7 @@ Append in the controller test file:
 func TestBuildJob_PiEngine_UsesAgentEntrypoint(t *testing.T) {
 	cfg := &v1alpha1.AgentConfig{
 		Spec: v1alpha1.AgentConfigSpec{
-			Runtime: v1alpha1.RuntimeConfig{Image: "runtime:dev", Engine: "pi"},
+			Runtime: v1alpha1.RuntimeConfig{Image: "runtime:dev", Engine: "pi", Model: "openai-codex/gpt-5.4"},
 			Auth:    v1alpha1.AuthConfig{ClaudeKeySecret: "claude", GithubAppSecret: "gh"},
 			Slack:   v1alpha1.SlackConfig{Channel: "#test"},
 		},
@@ -2733,18 +2740,47 @@ func TestBuildJob_PiEngine_UsesAgentEntrypoint(t *testing.T) {
 		},
 	}
 	job := buildJob(task, cfg)
-	// pi path uses node entrypoint with the pi agent module:
 	args := job.Spec.Template.Spec.Containers[0].Args
 	if len(args) == 0 || args[len(args)-1] != "agents/code-pr.ts" {
 		t.Fatalf("expected agents/code-pr.ts entrypoint, got args=%v", args)
 	}
+	envByName := map[string]string{}
 	for _, e := range job.Spec.Template.Spec.Containers[0].Env {
-		if e.Name == "ANTHROPIC_API_KEY" {
-			t.Fatal("pi engine job should not have ANTHROPIC_API_KEY")
-		}
+		envByName[e.Name] = e.Value
+	}
+	if _, has := envByName["ANTHROPIC_API_KEY"]; has {
+		t.Fatal("pi engine job should not have ANTHROPIC_API_KEY")
+	}
+	// Spike A4 finding: the runtime requires the qualified provider/id model form.
+	// Operator must propagate AgentConfig.spec.runtime.model verbatim into AIOS_PI_MODEL.
+	if envByName["AIOS_PI_MODEL"] != "openai-codex/gpt-5.4" {
+		t.Fatalf("AIOS_PI_MODEL=%q, want openai-codex/gpt-5.4", envByName["AIOS_PI_MODEL"])
+	}
+}
+
+func TestBuildJob_PiEngine_RejectsBareModel(t *testing.T) {
+	// Spike A4: bare model id (e.g. "gpt-5.4" without "openai-codex/" prefix)
+	// routes to azure-openai-responses and fails at runtime. Reject early at
+	// Job-build time rather than letting the failure surface as a 500 from pi.
+	cfg := &v1alpha1.AgentConfig{
+		Spec: v1alpha1.AgentConfigSpec{
+			Runtime: v1alpha1.RuntimeConfig{Image: "runtime:dev", Engine: "pi", Model: "gpt-5.4"},
+			Auth:    v1alpha1.AuthConfig{GithubAppSecret: "gh"},
+			Slack:   v1alpha1.SlackConfig{Channel: "#test"},
+		},
+	}
+	task := &v1alpha1.AgentTask{Spec: v1alpha1.AgentTaskSpec{
+		AgentType: "code-pr", AgentConfig: "code-pr-pi",
+		Source: v1alpha1.TaskSource{Type: "github-issue", Repo: "x", IssueNumber: 1},
+		ToolPolicy: "code-pr-policy",
+	}}
+	if _, err := buildJobValidated(task, cfg); err == nil {
+		t.Fatal("expected validation error for bare model id")
 	}
 }
 ```
+
+(`buildJobValidated` is the variant that returns an error; the existing `buildJob` may panic or wrap it depending on the controller's existing error-surface pattern. Engineer: align with the operator's existing conventions.)
 
 Also add the symmetric test that `engine == "claude-sdk"` keeps the existing entrypoint and env.
 
@@ -2753,14 +2789,25 @@ Also add the symmetric test that `engine == "claude-sdk"` keeps the existing ent
 - [ ] **Step 4: Implement the branch in `buildJob`**
 
 ```go
-func buildJob(task *v1alpha1.AgentTask, cfg *v1alpha1.AgentConfig) *batchv1.Job {
+import "strings"
+
+// buildJobValidated is the error-returning variant; existing callers can keep
+// using a panicking buildJob wrapper if that matches the operator's pattern.
+func buildJobValidated(task *v1alpha1.AgentTask, cfg *v1alpha1.AgentConfig) (*batchv1.Job, error) {
 	// ... existing setup ...
 	switch cfg.Spec.Runtime.Engine {
 	case "pi":
+		// Spike A4: pi --model expects "provider/id". Bare ids route to the
+		// wrong provider and fail at runtime. Validate at Job build time.
+		if !strings.Contains(cfg.Spec.Runtime.Model, "/") {
+			return nil, fmt.Errorf("AgentConfig %q: runtime.model %q must be in 'provider/id' form (e.g. openai-codex/gpt-5.4)",
+				cfg.Name, cfg.Spec.Runtime.Model)
+		}
 		container.Args = append(container.Args, "agents/code-pr.ts")
 		container.Env = append(container.Env,
 			corev1.EnvVar{Name: "AUTH_BROKER_URL", Value: "http://auth-broker.aios.svc:8080"},
 			corev1.EnvVar{Name: "PI_AGENT_TYPE", Value: task.Spec.AgentType},
+			corev1.EnvVar{Name: "AIOS_PI_MODEL", Value: cfg.Spec.Runtime.Model},
 		)
 		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
 			Name: "fabric-patterns", MountPath: "/fabric-patterns", ReadOnly: true,
@@ -2770,7 +2817,7 @@ func buildJob(task *v1alpha1.AgentTask, cfg *v1alpha1.AgentConfig) *batchv1.Job 
 	default: // "claude-sdk" or empty
 		// existing args/env preserved
 	}
-	return job
+	return job, nil
 }
 ```
 
@@ -3170,10 +3217,12 @@ export async function main(): Promise<void> {
   const lease = await acquireLease("code-pr");
   try {
     const pf = await preflight({ repo, issue, gh: new GhCli() });
+    const piModel = mustEnv("AIOS_PI_MODEL"); // e.g. "openai-codex/gpt-5.4" — provider/id form is required
     const result = await runPi({
       piBinary: "/usr/local/bin/pi",
       args: [
         "--mode", "json",
+        "--model", piModel,
         "--no-extensions",  // we'll add ours explicitly
         "--no-skills",
         "--no-prompt-templates",
@@ -3274,7 +3323,10 @@ spec:
   runtime:
     image: ghcr.io/diixtra/aios-runtime:dev
     engine: pi
-    model: gpt-5    # or whatever pi's subscription default model is
+    # Model MUST be in the provider/id form pi expects when invoked with --model.
+    # Spike A4 confirmed: bare "gpt-5" routes to azure-openai-responses (no key);
+    # only "openai-codex/<id>" routes to the ChatGPT subscription transport.
+    model: openai-codex/gpt-5.4
     maxTokens: 200000
   resources:
     requests: { cpu: 200m, memory: 512Mi }
