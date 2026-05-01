@@ -17,6 +17,7 @@ resources:
   - operator/cluster-role.yaml
   - operator/cluster-role-binding.yaml
   - operator/deployment.yaml
+  - operator/agentconfig-code-pr-pi.yaml
 
   # Webhook
   - webhook/serviceaccount.yaml

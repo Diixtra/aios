@@ -1,0 +1,37 @@
+# AgentConfig for the pi-engine code-pr agent.
+#
+# Selects the pi-coding-agent runtime (engine: pi) which routes through the
+# auth-broker for ChatGPT-subscription credential leasing. The model field
+# uses the qualified `provider/id` form pi expects when invoked with
+# `--model`. Spike A4 confirmed: a bare id like `gpt-5` routes to
+# azure-openai-responses (no API key in this cluster), so it must be the
+# fully-qualified `openai-codex/<id>` form to use the ChatGPT subscription
+# transport. The operator's AgentTask Job-builder validates this shape at
+# reconcile time (see operator/internal/controller/job_builder.go).
+apiVersion: aios.kazie.co.uk/v1alpha1
+kind: AgentConfig
+metadata:
+  name: code-pr-pi
+  namespace: aios
+  labels:
+    app.kubernetes.io/part-of: aios
+spec:
+  runtime:
+    image: ghcr.io/diixtra/aios-runtime:dev
+    engine: pi
+    model: openai-codex/gpt-5.4
+    maxTokens: 200000
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  auth:
+    # claude-api-key is unused on the pi engine but the CRD requires the
+    # field; reference the existing Secret so OnePassword sync still works.
+    claudeKeySecret: aios-claude-api-key
+    githubAppSecret: aios-github-app
+  slack:
+    channel: "#aios-agents"
