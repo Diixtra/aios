@@ -2,7 +2,7 @@
 
 **Date:** 2026-04-30
 **Pi version:** 0.70.6
-**Outcome:** <go | no-go | go-with-changes>
+**Outcome:** **go-with-changes** — proceed with Phase 0, fold per-Job bundle-copy refinement into B11.
 
 ## A2 — PI_CODING_AGENT_DIR layout
 
@@ -77,6 +77,79 @@ pi --model openai-codex/gpt-5.4 --mode json --no-extensions --no-skills \
 7. **Rancher Desktop / podman mount visibility:** scratch dirs under `/tmp` were not visible inside the Rancher VM (`statfs ... no such file or directory`). Using `$HOME` works. Using `:Z` SELinux relabel on the bind mount avoids container-side permission errors. Document this in the broker's local dev setup.
 
 ## A5 — Concurrent processes
+
+**Outcome: safe at low concurrency.** Two pi containers (`pi-a` and `pi-b`) launched in parallel against the same `PI_CODING_AGENT_DIR` (same `auth.json`) both completed successfully:
+
+- `pi-a` returned `AAA` (provider=openai-codex, model=gpt-5.4)
+- `pi-b` returned `BBB` (provider=openai-codex, model=gpt-5.4, with reasoning trace)
+
+Both processes coexisted on:
+- `auth.json` — read concurrently with no locking visible from the host
+- `sessions/` — both wrote separate per-process JSONL session files (filenames are `<timestamp>_<uuid>.jsonl` so collision risk is negligible)
+
+`auth.json` sha256 was unchanged after this concurrent run — both processes consumed the still-fresh access token from the previous A4 call without triggering a rotation. This is **not a guarantee that concurrent rotations are safe**: under higher concurrency or near token-expiry, two pi processes might both attempt to refresh and write `auth.json`, producing a race.
+
+**Implication for the broker design:**
+
+> **Each Job gets its own writeable copy of the bundle**, not a shared PVC mount. The broker hands out an auth bundle (via `GET /v1/auth/bundle`) at lease-acquire time; the Job writes it to its own ephemeral `PI_CODING_AGENT_DIR`; the Job runs pi; on lease release, the Job optionally POSTs the rewritten bundle back via `PUT /v1/auth/bundle/post-run` (broker accepts, validates, persists if newer). This avoids the concurrent-write race entirely.
+
+This is a **revision to the spec/plan**: previously the design assumed Jobs would mount the broker's PVC. Switching to per-Job bundle copy adds an upload-back step but eliminates a class of race conditions. Worth folding into Phase 0 — see plan task B11 (HTTP endpoints) — before that task ships.
+
 ## A6 — Refresh-token rotation
+
+**Outcome: pi auto-refreshes transparently; broker does nothing special.**
+
+Procedure:
+1. Forced `auth.json["openai-codex"].expires = 1` (Unix epoch — i.e. very stale).
+2. Invoked pi with `--model openai-codex/gpt-5.4 -p "ping"` against the tampered bundle.
+3. Observed:
+   - Inference succeeded (returned `CCC`).
+   - `auth.json` sha256 changed: `a1e282c6...` → `f2baf741...`
+   - `expires` updated to a future timestamp ~7 days out (e.g. `1778479259151`).
+   - `access` field rotated to a fresh JWT (visible prefix `eyJhbGciOiJSUzI1NiIs...` differs from previous).
+   - `refresh` field unchanged (90 chars — refresh token chain preserved).
+
+**Implication for the broker:**
+
+> The auth-broker does NOT need an OAuth refresh implementation of its own. **Periodically invoking pi is sufficient**: pi's internal HTTP client refreshes the access token on demand using the long-lived refresh token, and rewrites `auth.json` in place. The broker's "weekly silent refresh" (Phase 0 task B5) is just `pi --list-models` (or any cheap pi invocation) on a timer.
+
+Atomic-write probe was inconclusive (inotify-tools install failed in container, not retried). However, A5 showed concurrent reads + writes don't collide at low load, and Go's atomic-write idiom in the broker's Store (Task B3) provides defence-in-depth on the broker side regardless of pi's behaviour. **Net: assume pi may or may not write atomically; the broker store handles both.**
+
 ## A7 — Pi outbound HTTPS transport
+
+**Outcome: not OpenAI-compatible. Brokered auth (not proxying) is the correct architecture.**
+
+Pi's JSON events for ChatGPT-Codex inference report:
+- `provider`: `openai-codex`
+- `api`: `openai-codex-responses`
+- `model`: `gpt-5.4` (and other gpt-5.x variants)
+
+The `openai-codex-responses` API name corresponds to OpenAI's **Codex / ChatGPT subscription transport**, not the public `/v1/chat/completions` endpoint. The two APIs differ in:
+- Authentication: subscription bearer token (rotated frequently, tied to ChatGPT account) vs platform API key (`sk-...`)
+- Request shape: `/responses` resource (with `input`, `instructions`, `tools` semantics) vs `/chat/completions`
+- Streaming events: different SSE shapes
+
+This means **we cannot front pi's subscription traffic with a generic OpenAI-compatible HTTP proxy**. Anything calling itself "OpenAI-compatible" expects `/v1/chat/completions`; pi-via-Codex calls the proprietary subscription endpoint.
+
+Full mitmproxy capture was not run (skipped after determining the API name is sufficient evidence). If we ever decide to add an HTTP-level proxy for cost telemetry / observability, we'd need to reverse-engineer the Codex subscription transport — significant work, no clear payoff over reading pi's JSON event stream.
+
+**Implication for the broker:** keeps the "brokered auth" design — no proxy. The broker's only HTTP-level interaction with OpenAI is whatever pi does internally; the broker just hands out `auth.json`. This is what the spec already says; A7 confirms it.
+
 ## Decision
+
+**Go.** Phase 0 + Phase 1 may proceed with the laptop-bootstrap + brokered-auth-bundle design. Concrete commitments going into Phase 0:
+
+| Question | Answer |
+|---|---|
+| Can the broker drive headless login? | **No.** `/login` is interactive; bootstrap is laptop-only (A3). |
+| Is the auth bundle portable? | **Yes.** Verified end-to-end with a real Codex inference (A4). |
+| Is concurrent multi-Job sharing safe? | **At low concurrency, yes.** Per-Job copy of bundle is the cleaner model — adds an upload-back step but eliminates the race-condition surface (A5). |
+| Is bundle write atomic on pi's side? | **Inconclusive.** Broker store does atomic writes regardless (defence in depth) (A6). |
+| Is the transport OpenAI-compatible? | **No.** `openai-codex-responses` is a proprietary subscription API. No proxy; brokered auth only (A7). |
+| Does pi auto-refresh access tokens? | **Yes.** Transparent on every invocation; broker just runs pi periodically to keep the chain alive (A6). |
+| **Go / no-go for Phase 0 as designed?** | **GO**, with the per-Job bundle-copy refinement folded into B11. |
+
+Open follow-ups beyond Phase 0:
+- If we ever want phone-only reauth, add a web-TTY surface (Risks table, Option B).
+- If Codex breaks (provider outage / policy change), API-key fallback is the documented escape hatch — auth.json schema supports `{"openai":{"type":"api_key","key":"sk-..."}}` per pi's providers docs.
+- Atomic-write check on pi (A6 deferred sub-task) — only matters if the broker store atomic-write proves insufficient under load. Defer until evidence shows it's needed.
