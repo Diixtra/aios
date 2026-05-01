@@ -14,8 +14,7 @@
  *      extensions and the deliver_result synthesis tool.
  *   5. uploadPostRunBundle — push the rotated access-token back to the
  *      broker (best-effort; non-fatal on failure).
- *   6. postflight — open a draft / real PR per the deliver_result status
- *      (lands in Task C11; current build logs the result and exits).
+ *   6. postflight — open a draft / real PR per the deliver_result status.
  *   7. releaseLease + cleanup — always-runs `finally`.
  */
 import { promises as fs } from "node:fs";
@@ -31,10 +30,12 @@ import {
 import { discoverFabricSkills } from "../../pi-extensions/fabric-skill/index.js";
 import { GitHubClient } from "../github.js";
 import { preflight, type GhClient } from "./preflight.js";
+import { postflight, type PostflightGh } from "./postflight.js";
 import { runPi, type RunPiSdkLike } from "./run-pi.js";
 
 export { preflight } from "./preflight.js";
 export type { GhClient, PreflightResult } from "./preflight.js";
+export { postflight } from "./postflight.js";
 
 function mustEnv(name: string): string {
   const value = process.env[name];
@@ -50,7 +51,7 @@ function mustEnv(name: string): string {
  * returns the local path. `getIssue` uses gh's existing `getIssueBody`
  * helper plus a JSON title fetch.
  */
-class GhCli implements GhClient {
+class GhCli implements GhClient, PostflightGh {
   async cloneRepo(slug: string): Promise<string> {
     const dir = await fs.mkdtemp(path.join("/tmp", "aios-repo-"));
     const { execFile } = await import("node:child_process");
@@ -90,6 +91,40 @@ class GhCli implements GhClient {
       );
     });
     return { title, body };
+  }
+
+  /** Open a PR via gh CLI. Maps the structural spec onto `gh pr create`. */
+  async openPR(spec: {
+    repo: string;
+    head: string;
+    title: string;
+    body: string;
+    draft: boolean;
+  }): Promise<{ url: string }> {
+    const args = [
+      "pr",
+      "create",
+      "--repo",
+      spec.repo,
+      "--head",
+      spec.head,
+      "--title",
+      spec.title,
+      "--body",
+      spec.body,
+    ];
+    if (spec.draft) args.push("--draft");
+    const { execFile } = await import("node:child_process");
+    const url = await new Promise<string>((resolve, reject) => {
+      execFile("gh", args, (err, stdout) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+        resolve((stdout ?? "").trim());
+      });
+    });
+    return { url };
   }
 }
 
@@ -145,11 +180,8 @@ export async function main(): Promise<void> {
       console.warn("post-run bundle upload failed (non-fatal):", err);
     }
 
-    // C11: replace this with `await postflight({ result, repo, issue, gh })`.
-    console.log(JSON.stringify({ result }));
-    if (result.status === "error") {
-      process.exitCode = 1;
-    }
+    const pr = await postflight({ result, repo, issue, gh });
+    console.log(JSON.stringify({ result, prUrl: pr.prUrl }));
   } finally {
     await fs.rm(piDir, { recursive: true, force: true });
     await releaseLease(lease.id);
