@@ -1,0 +1,20 @@
+# Spike harness for pi auth-transport investigation.
+# Diixtra convention: just (not make), podman (not docker).
+
+default:
+    @just --list
+
+build:
+    podman compose build
+
+shell:
+    podman compose run --rm pi bash
+
+inspect-state:
+    podman compose run --rm pi bash -c 'ls -la $PI_CODING_AGENT_DIR && find $PI_CODING_AGENT_DIR -type f -exec sha256sum {} \;'
+
+run-prompt:
+    podman compose run --rm pi bash -c 'pi --mode json --no-extensions --no-skills --no-prompt-templates --no-context-files -p "Reply with the single token PONG and nothing else."'
+
+clean:
+    podman compose down -v

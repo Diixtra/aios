@@ -1,0 +1,11 @@
+services:
+  pi:
+    build: .
+    image: aios-spike/pi:latest
+    volumes:
+      - pi-state:/pi-state          # PI_CODING_AGENT_DIR
+      - ./scratch:/work
+    stdin_open: false                # explicitly NO TTY — this is the headless test
+    tty: false
+volumes:
+  pi-state:
