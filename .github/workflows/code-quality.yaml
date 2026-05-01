@@ -18,4 +18,4 @@ jobs:
   code-quality:
     uses: Diixtra/diixtra-forge/.github/workflows/code-quality.yaml@main
     with:
-      mode: observe
+      mode: enforce
