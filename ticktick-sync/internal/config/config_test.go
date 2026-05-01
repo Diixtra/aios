@@ -15,11 +15,11 @@ func setEnv(t *testing.T, vars map[string]string) {
 
 func validEnv() map[string]string {
 	return map[string]string{
-		"TICKTICK_ACCESS_TOKEN":  "tt-token",
-		"TICKTICK_PROJECT_ID":    "proj-123",
-		"GITHUB_TOKEN":           "gh-token",
-		"GITHUB_WEBHOOK_SECRET":  "secret",
-		"GITHUB_REPOS":           "Diixtra/aios",
+		"TICKTICK_ACCESS_TOKEN": "tt-token",
+		"TICKTICK_PROJECT_ID":   "proj-123",
+		"GITHUB_TOKEN":          "gh-token",
+		"GITHUB_WEBHOOK_SECRET": "secret",
+		"GITHUB_REPOS":          "Diixtra/aios",
 	}
 }
 
