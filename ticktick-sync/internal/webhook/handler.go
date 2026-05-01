@@ -55,7 +55,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to read body", http.StatusBadRequest)
 		return
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	signature := r.Header.Get("X-Hub-Signature-256")
 	if !validSignature(h.secret, body, signature) {
@@ -66,7 +66,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	eventType := r.Header.Get("X-GitHub-Event")
 	if eventType != "issues" {
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "ignored event")
+		_, _ = fmt.Fprint(w, "ignored event")
 		return
 	}
 
@@ -89,7 +89,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "labeled":
 		if event.Label.Name != "agent" {
 			w.WriteHeader(http.StatusOK)
-			fmt.Fprint(w, "ignored label")
+			_, _ = fmt.Fprint(w, "ignored label")
 			return
 		}
 		slog.Info("webhook: issue labeled agent", "repo", event.Repository.FullName, "issue", event.Issue.Number)
@@ -100,12 +100,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	default:
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, "ignored action")
+		_, _ = fmt.Fprint(w, "ignored action")
 		return
 	}
 
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, "ok")
+	_, _ = fmt.Fprint(w, "ok")
 }
 
 func validSignature(secret, payload []byte, signature string) bool {
