@@ -29,6 +29,10 @@ var (
 	GroupVersion = schema.GroupVersion{Group: "aios.kazie.co.uk", Version: "v1alpha1"}
 
 	// SchemeBuilder is used to add go types to the GroupVersionResource scheme.
+	//
+	//nolint:staticcheck // SA1019: scheme.Builder is the kubebuilder-generated
+	// helper. Migrating away requires moving the registration into a non-api
+	// package per controller-runtime guidance — tracked separately.
 	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
 
 	// AddToScheme adds the types in this group-version to the given scheme.

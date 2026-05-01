@@ -70,7 +70,9 @@ func (e *Engine) PollTickTick(ctx context.Context) error {
 					slog.Error("failed to close issue", "error", err)
 				} else {
 					m.Closed = true
-					e.store.AddMapping(ctx, *m)
+					if err := e.store.AddMapping(ctx, *m); err != nil {
+						slog.Error("add mapping failed", "error", err)
+					}
 				}
 			}
 			continue
@@ -105,13 +107,15 @@ func (e *Engine) PollTickTick(ctx context.Context) error {
 			continue
 		}
 
-		e.store.AddMapping(ctx, state.Mapping{
+		if err := e.store.AddMapping(ctx, state.Mapping{
 			TickTickProjectID: task.ProjectID,
 			TickTickTaskID:    task.ID,
 			GitHubRepo:        targetRepo,
 			GitHubIssueNumber: issue.Number,
 			LastSyncedAt:      time.Now(),
-		})
+		}); err != nil {
+			slog.Error("add mapping failed", "error", err)
+		}
 	}
 
 	e.store.SetLastTickTickPoll(ctx, time.Now())
@@ -137,7 +141,9 @@ func (e *Engine) HandleIssueClosed(ctx context.Context, repo string, issueNumber
 	}
 
 	m.Closed = true
-	e.store.AddMapping(ctx, *m)
+	if err := e.store.AddMapping(ctx, *m); err != nil {
+		slog.Error("add mapping failed", "error", err)
+	}
 
 	if err := e.store.Flush(ctx); err != nil {
 		slog.Error("state flush failed", "error", err)
@@ -182,13 +188,15 @@ func (e *Engine) HandleIssueLabeled(ctx context.Context, repo string, issueNumbe
 		slog.Error("failed to update issue body with marker", "error", err)
 	}
 
-	e.store.AddMapping(ctx, state.Mapping{
+	if err := e.store.AddMapping(ctx, state.Mapping{
 		TickTickProjectID: e.projectID,
 		TickTickTaskID:    task.ID,
 		GitHubRepo:        repo,
 		GitHubIssueNumber: issueNumber,
 		LastSyncedAt:      time.Now(),
-	})
+	}); err != nil {
+		slog.Error("add mapping failed", "error", err)
+	}
 
 	if err := e.store.Flush(ctx); err != nil {
 		slog.Error("state flush failed", "error", err)

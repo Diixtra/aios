@@ -97,10 +97,10 @@ func (c *Client) CompleteTask(ctx context.Context, projectID, taskID string) err
 	if err != nil {
 		return fmt.Errorf("complete task: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusUnauthorized && c.refreshToken != "" {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err := c.refreshAccessToken(ctx); err != nil {
 			return fmt.Errorf("token refresh failed: %w", err)
 		}
@@ -108,7 +108,7 @@ func (c *Client) CompleteTask(ctx context.Context, projectID, taskID string) err
 		if err != nil {
 			return fmt.Errorf("complete task after refresh: %w", err)
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 	}
 
 	if resp.StatusCode >= 400 {
@@ -123,10 +123,10 @@ func (c *Client) get(ctx context.Context, path string, out interface{}) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusUnauthorized && c.refreshToken != "" {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err := c.refreshAccessToken(ctx); err != nil {
 			return fmt.Errorf("token refresh failed: %w", err)
 		}
@@ -134,7 +134,7 @@ func (c *Client) get(ctx context.Context, path string, out interface{}) error {
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 	}
 
 	if resp.StatusCode >= 400 {
@@ -150,10 +150,10 @@ func (c *Client) post(ctx context.Context, path string, body []byte, out interfa
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusUnauthorized && c.refreshToken != "" {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err := c.refreshAccessToken(ctx); err != nil {
 			return fmt.Errorf("token refresh failed: %w", err)
 		}
@@ -161,7 +161,7 @@ func (c *Client) post(ctx context.Context, path string, body []byte, out interfa
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 	}
 
 	if resp.StatusCode >= 400 {
@@ -217,7 +217,7 @@ func (c *Client) refreshAccessToken(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)

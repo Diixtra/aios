@@ -35,13 +35,21 @@ linters:
           - lll
       # Test files use idiomatic patterns that trigger style linters benignly:
       # repeated string literals as test data, unchecked errors on cleanup helpers,
-      # ineffectual assignments in mock setup, slice prealloc on small fixtures.
+      # ineffectual assignments in mock setup, slice prealloc on small fixtures,
+      # and intentional use of deprecated APIs (Result.Requeue, etc.) for
+      # backwards-compat coverage.
       - path: "_test\\.go"
         linters:
           - goconst
           - errcheck
           - ineffassign
           - prealloc
+          - staticcheck
+      # Test utilities under test/ use dot imports for ginkgo and other patterns
+      # that staticcheck flags as style violations.
+      - path: "test/.*\\.go"
+        linters:
+          - staticcheck
   settings:
     revive:
       rules:
