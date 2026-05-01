@@ -121,7 +121,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusCreated)
-	fmt.Fprint(w, "task created")
+	_, _ = fmt.Fprint(w, "task created")
 }
 
 // validSignature checks the HMAC-SHA256 signature of the payload.
