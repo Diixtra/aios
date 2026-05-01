@@ -1,6 +1,6 @@
 """Tests for voice session management."""
 
-from src.session import VoiceSession, SessionManager, TranscriptEntry
+from src.session import VoiceSession, SessionManager
 
 
 class TestVoiceSession:

@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 def _raise(code: int, message: str) -> None:
     raise McpError(mcp_types.ErrorData(code=code, message=message))
 
+
 # claude stop_reason → MCP stopReason
 _STOP_REASON_MAP: dict[str, str] = {
     "end_turn": "endTurn",

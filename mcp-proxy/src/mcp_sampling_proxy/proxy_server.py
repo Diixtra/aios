@@ -56,11 +56,15 @@ class ProxyServer:
         @self._server.call_tool()
         async def handle_call_tool(
             name: str, arguments: dict[str, Any] | None
-        ) -> list[mcp_types.TextContent | mcp_types.ImageContent | mcp_types.EmbeddedResource]:
+        ) -> list[
+            mcp_types.TextContent | mcp_types.ImageContent | mcp_types.EmbeddedResource
+        ]:
             _debug(config, f"tool call: {name}")
             if not self._upstream:
                 raise McpError(
-                    mcp_types.ErrorData(code=mcp_types.INTERNAL_ERROR, message="No upstream connection")
+                    mcp_types.ErrorData(
+                        code=mcp_types.INTERNAL_ERROR, message="No upstream connection"
+                    )
                 )
             result = await self._upstream.call_tool(name, arguments or {})
             return result.content

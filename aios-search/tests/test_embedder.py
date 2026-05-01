@@ -9,17 +9,16 @@ from aios_search.embedder import Embedder
 @pytest.fixture
 def mock_response():
     """Create a mock httpx response with embedding data."""
+
     def _make(embeddings: list[list[float]]):
         resp = MagicMock()
         resp.status_code = 200
         resp.raise_for_status = MagicMock()
         resp.json.return_value = {
-            "data": [
-                {"embedding": emb, "index": i}
-                for i, emb in enumerate(embeddings)
-            ]
+            "data": [{"embedding": emb, "index": i} for i, emb in enumerate(embeddings)]
         }
         return resp
+
     return _make
 
 

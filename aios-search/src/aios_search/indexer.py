@@ -92,9 +92,7 @@ class Indexer:
         vectors = self._embedder.embed(texts)
         rows: list[tuple] = []
         for chunk, vector in zip(chunks, vectors):
-            metadata_payload = {
-                k: v for k, v in chunk.metadata.items() if k != "title"
-            }
+            metadata_payload = {k: v for k, v in chunk.metadata.items() if k != "title"}
             rows.append(
                 (
                     chunk.file_path,
@@ -231,9 +229,7 @@ class Indexer:
 
     # Internals ---------------------------------------------------------
 
-    def _filter_where_parts(
-        self, filters: dict | None, params: list[Any]
-    ) -> list[str]:
+    def _filter_where_parts(self, filters: dict | None, params: list[Any]) -> list[str]:
         """Translate a filter dict into SQL predicates.
 
         Qdrant's ``MatchValue`` matched scalar-against-scalar and
@@ -249,8 +245,7 @@ class Indexer:
             if value is None:
                 continue
             parts.append(
-                "((metadata->>%s) = %s "
-                "OR (metadata->%s) @> to_jsonb(%s::text))"
+                "((metadata->>%s) = %s OR (metadata->%s) @> to_jsonb(%s::text))"
             )
             params.extend([key, str(value), key, str(value)])
         return parts

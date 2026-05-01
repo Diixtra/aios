@@ -1,7 +1,3 @@
-import os
-import tempfile
-from pathlib import Path
-
 import pytest
 
 
@@ -46,8 +42,7 @@ def tmp_vault(tmp_path):
         "type: framework\n"
         "entity: [group]\n"
         "status: active\n"
-        "---\n\n"
-        + "This is a business framework for evaluating acquisitions. " * 40
+        "---\n\n" + "This is a business framework for evaluating acquisitions. " * 40
     )
     (knowledge / "Business Framework.md").write_text(no_heading_content)
 

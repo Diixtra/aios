@@ -69,7 +69,11 @@ def test_search(client, mock_indexer):
 def test_search_with_filters(client, mock_indexer):
     resp = client.post(
         "/search",
-        json={"query": "IDOX", "limit": 3, "filters": {"type": "meeting", "entity": "diixtra"}},
+        json={
+            "query": "IDOX",
+            "limit": 3,
+            "filters": {"type": "meeting", "entity": "diixtra"},
+        },
         headers={"Authorization": "Bearer test-key"},
     )
     assert resp.status_code == 200

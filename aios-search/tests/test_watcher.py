@@ -1,6 +1,5 @@
 import hashlib
 import logging
-from pathlib import Path
 from unittest.mock import MagicMock, call
 
 import pytest
@@ -37,7 +36,9 @@ def watcher(mock_settings, mock_indexer):
 def test_process_file_calls_indexer(watcher, mock_indexer, tmp_vault):
     path = tmp_vault / "12-CRM" / "Contacts" / "Shah Ali.md"
     watcher._process_file(path)
-    mock_indexer.delete_by_file_path.assert_called_once_with("12-CRM/Contacts/Shah Ali.md")
+    mock_indexer.delete_by_file_path.assert_called_once_with(
+        "12-CRM/Contacts/Shah Ali.md"
+    )
     mock_indexer.upsert_chunks.assert_called_once()
 
 
@@ -48,7 +49,9 @@ def test_process_file_adds_to_retry_on_failure(watcher, mock_indexer, tmp_vault)
     assert watcher.has_pending_retry("12-CRM/Contacts/Shah Ali.md")
 
 
-def test_process_file_first_failure_logs_exception_with_traceback(watcher, mock_indexer, tmp_vault, caplog):
+def test_process_file_first_failure_logs_exception_with_traceback(
+    watcher, mock_indexer, tmp_vault, caplog
+):
     mock_indexer.upsert_chunks.side_effect = Exception("Qdrant down")
     path = tmp_vault / "12-CRM" / "Contacts" / "Shah Ali.md"
     with caplog.at_level(logging.WARNING, logger="aios_search.watcher"):
@@ -57,7 +60,9 @@ def test_process_file_first_failure_logs_exception_with_traceback(watcher, mock_
     assert len(exception_records) == 1, "first failure should log with traceback"
 
 
-def test_process_file_subsequent_failures_suppress_traceback(watcher, mock_indexer, tmp_vault, caplog):
+def test_process_file_subsequent_failures_suppress_traceback(
+    watcher, mock_indexer, tmp_vault, caplog
+):
     mock_indexer.upsert_chunks.side_effect = Exception("Qdrant down")
     path = tmp_vault / "12-CRM" / "Contacts" / "Shah Ali.md"
     watcher._process_file(path)
@@ -91,12 +96,15 @@ def test_process_retries_respects_backoff(watcher, mock_indexer, tmp_vault):
     assert mock_indexer.upsert_chunks.call_count == initial_call_count
 
 
-def test_process_retries_fires_when_backoff_elapsed(watcher, mock_indexer, tmp_vault, monkeypatch):
+def test_process_retries_fires_when_backoff_elapsed(
+    watcher, mock_indexer, tmp_vault, monkeypatch
+):
     mock_indexer.upsert_chunks.side_effect = Exception("Qdrant down")
     path = tmp_vault / "12-CRM" / "Contacts" / "Shah Ali.md"
     watcher._process_file(path)
     # Force the backoff to elapse by fast-forwarding the monotonic clock.
     from aios_search import watcher as watcher_mod
+
     original = watcher_mod.time.monotonic
     monkeypatch.setattr(watcher_mod.time, "monotonic", lambda: original() + 3600)
     call_count_before = mock_indexer.upsert_chunks.call_count
@@ -107,7 +115,9 @@ def test_process_retries_fires_when_backoff_elapsed(watcher, mock_indexer, tmp_v
 def test_process_delete(watcher, mock_indexer, tmp_vault):
     path = tmp_vault / "12-CRM" / "Contacts" / "Shah Ali.md"
     watcher._process_delete(path)
-    mock_indexer.delete_by_file_path.assert_called_once_with("12-CRM/Contacts/Shah Ali.md")
+    mock_indexer.delete_by_file_path.assert_called_once_with(
+        "12-CRM/Contacts/Shah Ali.md"
+    )
 
 
 def test_reconcile_indexes_missing_files(watcher, mock_indexer, tmp_vault):
@@ -126,7 +136,8 @@ def test_reconcile_removes_orphans(watcher, mock_indexer, tmp_vault):
     }
     watcher.reconcile()
     delete_calls = [
-        c for c in mock_indexer.delete_by_file_path.call_args_list
+        c
+        for c in mock_indexer.delete_by_file_path.call_args_list
         if c == call("deleted-note.md")
     ]
     assert len(delete_calls) == 1

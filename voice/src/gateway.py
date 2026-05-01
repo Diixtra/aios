@@ -34,14 +34,10 @@ async def healthz() -> JSONResponse:
 @app.get("/")
 async def index() -> FileResponse:
     """Serve the push-to-talk UI."""
-    return FileResponse(
-        STATIC_DIR / "index.html", media_type="text/html"
-    )
+    return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
 
 
-async def _get_claude_response(
-    task_name: str, transcript: list[dict[str, str]]
-) -> str:
+async def _get_claude_response(task_name: str, transcript: list[dict[str, str]]) -> str:
     """Call the Anthropic API with the session transcript and return the response.
 
     Args:
@@ -126,12 +122,9 @@ async def voice_ws(
 
             # Step 2: Generate agent response via Claude API
             transcript_for_claude = [
-                {"role": e.role, "content": e.text}
-                for e in session.transcript
+                {"role": e.role, "content": e.text} for e in session.transcript
             ]
-            agent_text = await _get_claude_response(
-                task_name, transcript_for_claude
-            )
+            agent_text = await _get_claude_response(task_name, transcript_for_claude)
             session.add_agent_message(agent_text)
 
             # Step 3: Send text transcript to client
@@ -159,8 +152,7 @@ async def voice_ws(
                 await slack.post_transcript(channel, thread, transcript_text)
             except Exception:
                 logger.exception(
-                    "Failed to post voice transcript to Slack "
-                    "channel=%s thread=%s",
+                    "Failed to post voice transcript to Slack channel=%s thread=%s",
                     channel,
                     thread,
                 )

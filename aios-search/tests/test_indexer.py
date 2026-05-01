@@ -4,6 +4,7 @@ We stand up a real pgvector/pgvector:pg18 testcontainer and apply the
 production schema.sql once per session. Each test runs in a transaction
 that is rolled back so assertions stay isolated.
 """
+
 import os
 
 import numpy as np
@@ -124,10 +125,20 @@ def test_ensure_collection_raises_when_table_missing(pg_container):
 
 def test_upsert_and_search_roundtrip(indexer):
     chunks = [
-        _chunk("20-Meetings/idox.md", 0, "IDOX migration discussion", title="IDOX Meeting",
-               metadata={"type": "meeting", "entity": ["diixtra"], "status": "done"}),
-        _chunk("10-Projects/website.md", 0, "New marketing website project", title="Website",
-               metadata={"type": "project", "entity": ["kazie"], "status": "active"}),
+        _chunk(
+            "20-Meetings/idox.md",
+            0,
+            "IDOX migration discussion",
+            title="IDOX Meeting",
+            metadata={"type": "meeting", "entity": ["diixtra"], "status": "done"},
+        ),
+        _chunk(
+            "10-Projects/website.md",
+            0,
+            "New marketing website project",
+            title="Website",
+            metadata={"type": "project", "entity": ["kazie"], "status": "active"},
+        ),
     ]
     indexer.upsert_chunks(chunks)
 
@@ -163,10 +174,12 @@ def test_upsert_updates_existing_row(indexer):
 
 
 def test_delete_by_file_path(indexer):
-    indexer.upsert_chunks([
-        _chunk("a.md", 0, "Alpha"),
-        _chunk("b.md", 0, "Bravo"),
-    ])
+    indexer.upsert_chunks(
+        [
+            _chunk("a.md", 0, "Alpha"),
+            _chunk("b.md", 0, "Bravo"),
+        ]
+    )
     indexer.delete_by_file_path("a.md")
     assert indexer.get_stats()["total_points"] == 1
     files = indexer.get_indexed_files()
@@ -175,39 +188,51 @@ def test_delete_by_file_path(indexer):
 
 
 def test_get_indexed_files_returns_hashes(indexer):
-    indexer.upsert_chunks([
-        _chunk("a.md", 0, "Alpha"),
-        _chunk("b.md", 0, "Bravo"),
-    ])
+    indexer.upsert_chunks(
+        [
+            _chunk("a.md", 0, "Alpha"),
+            _chunk("b.md", 0, "Bravo"),
+        ]
+    )
     files = indexer.get_indexed_files()
     assert files == {"a.md": "hash-a.md-0", "b.md": "hash-b.md-0"}
 
 
 def test_search_filters_scalar_metadata(indexer):
-    indexer.upsert_chunks([
-        _chunk("a.md", 0, "Note about IDOX", metadata={"type": "meeting"}),
-        _chunk("b.md", 0, "Note about IDOX", metadata={"type": "project"}),
-    ])
-    results = indexer.search("IDOX", limit=5, min_score=0.0, filters={"type": "meeting"})
+    indexer.upsert_chunks(
+        [
+            _chunk("a.md", 0, "Note about IDOX", metadata={"type": "meeting"}),
+            _chunk("b.md", 0, "Note about IDOX", metadata={"type": "project"}),
+        ]
+    )
+    results = indexer.search(
+        "IDOX", limit=5, min_score=0.0, filters={"type": "meeting"}
+    )
     assert len(results) == 1
     assert results[0]["file_path"] == "a.md"
 
 
 def test_search_filters_array_metadata(indexer):
-    indexer.upsert_chunks([
-        _chunk("a.md", 0, "Project X", metadata={"entity": ["diixtra", "kazie"]}),
-        _chunk("b.md", 0, "Project X", metadata={"entity": ["other"]}),
-    ])
-    results = indexer.search("Project X", limit=5, min_score=0.0, filters={"entity": "diixtra"})
+    indexer.upsert_chunks(
+        [
+            _chunk("a.md", 0, "Project X", metadata={"entity": ["diixtra", "kazie"]}),
+            _chunk("b.md", 0, "Project X", metadata={"entity": ["other"]}),
+        ]
+    )
+    results = indexer.search(
+        "Project X", limit=5, min_score=0.0, filters={"entity": "diixtra"}
+    )
     assert len(results) == 1
     assert results[0]["file_path"] == "a.md"
 
 
 def test_find_similar_excludes_source(indexer):
-    indexer.upsert_chunks([
-        _chunk("a.md", 0, "IDOX migration timeline"),
-        _chunk("b.md", 0, "IDOX migration milestones"),
-    ])
+    indexer.upsert_chunks(
+        [
+            _chunk("a.md", 0, "IDOX migration timeline"),
+            _chunk("b.md", 0, "IDOX migration milestones"),
+        ]
+    )
     results = indexer.find_similar("a.md", limit=5, min_score=0.0)
     assert results is not None
     file_paths = [r["file_path"] for r in results]
@@ -240,10 +265,12 @@ def test_upsert_empty_chunks_is_noop(indexer):
 def test_search_respects_min_score(indexer):
     # All the deterministic embedder's vectors map similar chars to similar
     # coordinates, so a very high min_score should drop unrelated results.
-    indexer.upsert_chunks([
-        _chunk("a.md", 0, "alpha"),
-        _chunk("b.md", 0, "zzzzz"),
-    ])
+    indexer.upsert_chunks(
+        [
+            _chunk("a.md", 0, "alpha"),
+            _chunk("b.md", 0, "zzzzz"),
+        ]
+    )
     results = indexer.search("alpha", limit=5, min_score=0.99)
     # Only the self-match (if any) should clear a 0.99 threshold; unrelated
     # vectors must not.
@@ -252,8 +279,10 @@ def test_search_respects_min_score(indexer):
 
 
 def test_search_with_none_filter_value_is_ignored(indexer):
-    indexer.upsert_chunks([
-        _chunk("a.md", 0, "content", metadata={"type": "meeting"}),
-    ])
+    indexer.upsert_chunks(
+        [
+            _chunk("a.md", 0, "content", metadata={"type": "meeting"}),
+        ]
+    )
     results = indexer.search("content", limit=5, min_score=0.0, filters={"type": None})
     assert len(results) == 1

@@ -8,7 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from starlette.testclient import TestClient
 
-from src.gateway import _get_claude_response, app, config
+from src.gateway import _get_claude_response, app
 
 
 @pytest.mark.asyncio
@@ -41,9 +41,7 @@ async def test_get_claude_response_calls_api() -> None:
 
     mock_client_instance = AsyncMock()
     mock_client_instance.post.return_value = mock_response
-    mock_client_instance.__aenter__ = AsyncMock(
-        return_value=mock_client_instance
-    )
+    mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
     mock_client_instance.__aexit__ = AsyncMock(return_value=False)
 
     with patch("src.gateway.httpx.AsyncClient", return_value=mock_client_instance):
@@ -75,9 +73,7 @@ async def test_get_claude_response_maps_agent_to_assistant() -> None:
 
     mock_client_instance = AsyncMock()
     mock_client_instance.post.return_value = mock_response
-    mock_client_instance.__aenter__ = AsyncMock(
-        return_value=mock_client_instance
-    )
+    mock_client_instance.__aenter__ = AsyncMock(return_value=mock_client_instance)
     mock_client_instance.__aexit__ = AsyncMock(return_value=False)
 
     with patch("src.gateway.httpx.AsyncClient", return_value=mock_client_instance):
@@ -128,6 +124,6 @@ def test_ws_accepts_valid_token() -> None:
     fake_config = VoiceConfig(voice_auth_token="secret-token")
     client = TestClient(app)
     with patch("src.gateway.config", fake_config):
-        with client.websocket_connect("/ws/test-task?token=secret-token") as ws:
+        with client.websocket_connect("/ws/test-task?token=secret-token"):
             # Connection accepted; close cleanly
             pass

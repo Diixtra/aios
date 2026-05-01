@@ -30,7 +30,9 @@ class ReconcileState:
     completed_at: str | None = None
 
 
-async def _run_startup(indexer: Indexer, watcher: Watcher, state: ReconcileState) -> None:
+async def _run_startup(
+    indexer: Indexer, watcher: Watcher, state: ReconcileState
+) -> None:
     loop = asyncio.get_running_loop()
     state.started_at = datetime.now(timezone.utc).isoformat()
     try:
@@ -72,8 +74,10 @@ def create_app(
     else:
         indexer = indexer_override
 
-    watcher = watcher_override if watcher_override is not None else Watcher(
-        settings=settings, indexer=indexer
+    watcher = (
+        watcher_override
+        if watcher_override is not None
+        else Watcher(settings=settings, indexer=indexer)
     )
 
     @asynccontextmanager
