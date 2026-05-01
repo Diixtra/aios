@@ -99,12 +99,12 @@ Side channels (Job → external):
 
 **Responsibilities:**
 
-- Own the pi provider credentials (`auth.json`-equivalent) in a 1Password Operator-backed Secret or encrypted PVC.
-- Publish short-lived, read-only auth bundles for Jobs, or expose a provider proxy only after the Phase -1 spike validates it.
-- Run a refresh loop with jitter; perform a low-impact refresh/validation weekly to keep the chain alive even when traffic is quiet.
+- Own the pi provider credentials (`auth.json`) on a writeable PVC (Phase -1 A4 ruled out RO mounts).
+- Publish writeable per-Job auth bundle copies via `GET /v1/auth/bundle`. Jobs seed their own ephemeral `PI_CODING_AGENT_DIR`, run pi (which may rotate the access token in place), then upload the mutated bundle back via `POST /v1/auth/bundle/post-run`. The broker keeps whichever bundle has the newer `expires` (Spike A5 conclusion — eliminates concurrent-write races on the broker's stored bundle).
+- Run pi periodically (default weekly) to keep the OAuth refresh-token chain alive (A6 confirmed pi auto-refreshes transparently — broker does no OAuth itself).
 - Enforce a configurable **Job lease** cap (default 4) reflecting subscription concurrency limits.
-- Surface metrics: `auth_broker_token_age_seconds`, `auth_broker_leases_active`, `auth_broker_lease_wait_seconds`, `auth_broker_refresh_total`, `auth_broker_state` (Healthy / Warning / Expired / Awaiting).
-- Drive the phone-based reauth flow (see below).
+- Surface metrics: `auth_broker_token_age_seconds`, `auth_broker_leases_active`, `auth_broker_lease_wait_seconds`, `auth_broker_refresh_total`, `auth_broker_post_run_uploads_total{accepted}`, `auth_broker_state` (Healthy / Warning / Expired / Awaiting).
+- Drive the laptop-bootstrap reauth flow (see below).
 
 **Auth lifecycle state machine (revised after Phase -1 A3):**
 

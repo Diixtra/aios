@@ -1916,11 +1916,14 @@ func (r *RealSlack) DM(ctx context.Context, userID, text string) error {
 - Create: `auth-broker/internal/server/revalidate.go`
 - Modify: `auth-broker/internal/server/server_test.go`
 
-Endpoints to add (B6 already added `POST /v1/auth/bundle`):
-- `POST /v1/leases/acquire` (body: `{holder}` → `{lease_id, expires_at}`)
-- `POST /v1/leases/release` (body: `{lease_id}` → 204)
-- `GET /v1/auth/bundle` (returns the verbatim `auth.json` bytes — admin-token-guarded; only the operator may pull a bundle into a Job)
-- `POST /v1/admin/revalidate` (admin-token-guarded; runs the orchestrator's `OnBundleUploaded` path against the current bundle and returns `{state, message}`)
+> **Per-Job bundle-copy contract (Spike A5 finding):** Jobs do **not** mount the broker's PVC. They acquire a lease, then `GET /v1/auth/bundle` to download a writeable copy into their own ephemeral `PI_CODING_AGENT_DIR`, run pi (which may rotate the access token in-place — A4), then `POST /v1/auth/bundle/post-run` to upload the mutated bundle back. The broker compares `expires` and persists if newer. This eliminates concurrent-write races on the broker's stored bundle.
+
+Endpoints to add (B6 already added `POST /v1/auth/bundle` for the laptop bootstrap upload):
+- `POST /v1/leases/acquire` (SA-token; body: `{holder}` → `{lease_id, expires_at}`)
+- `POST /v1/leases/release` (SA-token; body: `{lease_id}` → 204)
+- `GET /v1/auth/bundle` (SA-token; returns the verbatim `auth.json` bytes — Jobs use this to seed their per-Job PI dir)
+- `POST /v1/auth/bundle/post-run` (SA-token; body: multipart `bundle` field with the mutated `auth.json`; broker accepts only if `expires` is newer than the stored bundle's, otherwise 200 with `{accepted:false, reason:"older or equal"}`)
+- `POST /v1/admin/revalidate` (admin-token; runs the orchestrator's `OnBundleUploaded` path against the current bundle and returns `{state, message}`)
 - `GET /healthz`, `GET /metrics` (prometheus)
 
 - [ ] **Step 1: Failing tests — one per handler, real httptest, real lease.Manager + store.Store**
@@ -2008,9 +2011,66 @@ func TestRevalidate_RunsOrchestratorAndReturnsState(t *testing.T) {
 		t.Fatalf("got %d, body=%s", rec.Code, rec.Body)
 	}
 }
+
+func TestPostRunBundle_AcceptsNewerExpires(t *testing.T) {
+	dir := t.TempDir()
+	st := store.New(filepath.Join(dir, "auth.json"))
+	if err := st.Write(store.Bundle{Raw: []byte(`{"openai-codex":{"expires":1000}}`)}); err != nil {
+		t.Fatal(err)
+	}
+	srv := New(Config{Store: st})
+
+	body := &bytes.Buffer{}
+	w := multipart.NewWriter(body)
+	fw, _ := w.CreateFormFile("bundle", "auth.json")
+	_, _ = fw.Write([]byte(`{"openai-codex":{"expires":2000}}`))
+	_ = w.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/bundle/post-run", body)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d, body=%s", rec.Code, rec.Body)
+	}
+	got, _ := st.Read()
+	if string(got.Raw) != `{"openai-codex":{"expires":2000}}` {
+		t.Fatalf("store not updated: %s", got.Raw)
+	}
+}
+
+func TestPostRunBundle_RejectsOlderExpires(t *testing.T) {
+	dir := t.TempDir()
+	st := store.New(filepath.Join(dir, "auth.json"))
+	if err := st.Write(store.Bundle{Raw: []byte(`{"openai-codex":{"expires":2000}}`)}); err != nil {
+		t.Fatal(err)
+	}
+	srv := New(Config{Store: st})
+
+	body := &bytes.Buffer{}
+	w := multipart.NewWriter(body)
+	fw, _ := w.CreateFormFile("bundle", "auth.json")
+	_, _ = fw.Write([]byte(`{"openai-codex":{"expires":1000}}`))
+	_ = w.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/bundle/post-run", body)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"accepted":false`) {
+		t.Fatalf("expected accepted:false body, got %s", rec.Body)
+	}
+	got, _ := st.Read()
+	if string(got.Raw) != `{"openai-codex":{"expires":2000}}` {
+		t.Fatalf("store mutated when it should not: %s", got.Raw)
+	}
+}
 ```
 
-(Adjust imports as needed; the `context` import is required for the stub. `Orchestrator` field on `Config` matches the interface defined below.)
+(Adjust imports — these tests need `bytes`, `mime/multipart`, `path/filepath`, `strings`, plus the `store` package.)
 
 - [ ] **Step 2: Implement handlers in their respective files**
 
@@ -2053,6 +2113,7 @@ func New(cfg Config) *Server {
 	s.mux.HandleFunc("POST /v1/leases/acquire", s.acquireLease)
 	s.mux.HandleFunc("POST /v1/leases/release", s.releaseLease)
 	s.mux.HandleFunc("GET /v1/auth/bundle", s.authBundle)
+	s.mux.HandleFunc("POST /v1/auth/bundle/post-run", s.postRunBundle)
 	s.mux.HandleFunc("POST /v1/admin/revalidate", s.revalidate)
 	// POST /v1/auth/bundle is registered by the BundleHandler from Task B6,
 	// wired in main.go alongside this server.
@@ -2063,6 +2124,65 @@ func (s *Server) Handler() http.Handler { return s.mux }
 ```
 
 (Using Go 1.22+ method-prefix routing.) Per-handler implementations live in `leases.go`, `auth.go`, and `revalidate.go` respectively, each ~20-30 lines.
+
+The post-run handler (`auth-broker/internal/server/auth.go`) compares `expires` between the incoming bundle and the stored one, persisting only on newer:
+
+```go
+func (s *Server) postRunBundle(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, bundleSizeLimit+1)
+	if err := r.ParseMultipartForm(bundleSizeLimit); err != nil {
+		http.Error(w, "invalid multipart body", http.StatusBadRequest)
+		return
+	}
+	file, _, err := r.FormFile("bundle")
+	if err != nil {
+		http.Error(w, "missing bundle field", http.StatusBadRequest)
+		return
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(file)
+	if err != nil {
+		http.Error(w, "read body", http.StatusBadRequest)
+		return
+	}
+	if !json.Valid(raw) {
+		http.Error(w, "bundle must be JSON", http.StatusBadRequest)
+		return
+	}
+	cur, err := s.cfg.Store.Read()
+	if err == nil && !isNewer(raw, cur.Raw) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"accepted":false,"reason":"older or equal"}`))
+		return
+	}
+	if err := s.cfg.Store.Write(store.Bundle{Raw: raw}); err != nil {
+		http.Error(w, "persist failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"accepted":true}`))
+}
+
+// isNewer compares the openai-codex.expires field. Returns true if incoming
+// expires > stored expires. Falls open (returns true) if either side is
+// unparseable to avoid blocking refresh on schema changes; the orchestrator
+// runs Validate after each accepted upload anyway.
+func isNewer(incoming, stored []byte) bool {
+	type bundle struct {
+		Codex struct {
+			Expires int64 `json:"expires"`
+		} `json:"openai-codex"`
+	}
+	var in, sv bundle
+	if err := json.Unmarshal(incoming, &in); err != nil {
+		return true
+	}
+	if err := json.Unmarshal(stored, &sv); err != nil {
+		return true
+	}
+	return in.Codex.Expires > sv.Codex.Expires
+}
+```
 
 - [ ] **Step 3: Tests pass**
 
@@ -3209,13 +3329,22 @@ import { preflight } from "./preflight";
 import { runPi } from "./run-pi";
 import { postflight } from "./postflight";
 import { GhCli } from "../github";
-import { acquireLease, releaseLease } from "../auth-broker";
+import { acquireLease, releaseLease, downloadBundle, uploadPostRunBundle } from "../auth-broker";
+import { promises as fs } from "node:fs";
+import path from "node:path";
 
 export async function main(): Promise<void> {
   const repo = mustEnv("AIOS_REPO");
   const issue = parseInt(mustEnv("AIOS_ISSUE_NUMBER"), 10);
   const lease = await acquireLease("code-pr");
+
+  // Per-Job bundle copy (Spike A5). Seed an ephemeral PI dir from the broker,
+  // run pi against it, then upload the (possibly-rotated) bundle back.
+  const piDir = await fs.mkdtemp("/tmp/pi-state-");
   try {
+    const bundle = await downloadBundle();
+    await fs.writeFile(path.join(piDir, "auth.json"), bundle, { mode: 0o600 });
+
     const pf = await preflight({ repo, issue, gh: new GhCli() });
     const piModel = mustEnv("AIOS_PI_MODEL"); // e.g. "openai-codex/gpt-5.4" — provider/id form is required
     const result = await runPi({
@@ -3236,6 +3365,7 @@ export async function main(): Promise<void> {
       ],
       cwd: pf.repoDir,
       env: {
+        PI_CODING_AGENT_DIR: piDir,
         SANDBOX_ALLOWED: JSON.stringify({ allowed: ["git ", "npm ", "go ", "pytest", "rg ", "cat ", "ls "] }),
         MCP_SERVERS: JSON.stringify([
           { name: "aios-search", url: process.env.AIOS_SEARCH_URL! },
@@ -3243,8 +3373,20 @@ export async function main(): Promise<void> {
         ]),
       },
     });
+
+    // Post-run upload-back: pi may have rotated the access token (A4 + A6).
+    // Best-effort — don't fail the agent if upload-back fails; the broker
+    // re-validates on next tick anyway.
+    try {
+      const updated = await fs.readFile(path.join(piDir, "auth.json"));
+      await uploadPostRunBundle(updated);
+    } catch (err) {
+      console.warn("post-run bundle upload failed (non-fatal):", err);
+    }
+
     await postflight({ result, repo, issue, gh: new GhCli() });
   } finally {
+    await fs.rm(piDir, { recursive: true, force: true });
     await releaseLease(lease.id);
   }
 }
@@ -3258,9 +3400,77 @@ function mustEnv(k: string): string {
 main().catch((e) => { console.error(e); process.exit(1); });
 ```
 
-- [ ] **Step 4: Test the wiring with a fake pi binary that emits the expected last-line JSON**
+- [ ] **Step 4: Add the runtime-side auth-broker client**
 
-- [ ] **Step 5: Commit**
+`runtime/src/auth-broker.ts`:
+
+```ts
+import { promises as fs } from "node:fs";
+
+const BROKER = process.env.AUTH_BROKER_URL ?? "http://auth-broker.aios.svc:8080";
+const SA_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token";
+
+async function bearer(): Promise<string> {
+  return (await fs.readFile(SA_TOKEN_PATH, "utf8")).trim();
+}
+
+export async function acquireLease(holder: string): Promise<{ id: string }> {
+  const res = await fetch(`${BROKER}/v1/leases/acquire`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${await bearer()}` },
+    body: JSON.stringify({ holder }),
+  });
+  if (!res.ok) throw new Error(`acquireLease ${res.status}`);
+  const body = await res.json();
+  return { id: body.lease_id };
+}
+
+export async function releaseLease(id: string): Promise<void> {
+  await fetch(`${BROKER}/v1/leases/release`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${await bearer()}` },
+    body: JSON.stringify({ lease_id: id }),
+  });
+}
+
+export async function downloadBundle(): Promise<Buffer> {
+  const res = await fetch(`${BROKER}/v1/auth/bundle`, {
+    headers: { Authorization: `Bearer ${await bearer()}` },
+  });
+  if (!res.ok) throw new Error(`downloadBundle ${res.status}`);
+  const ab = await res.arrayBuffer();
+  return Buffer.from(ab);
+}
+
+export async function uploadPostRunBundle(bundle: Buffer): Promise<{ accepted: boolean }> {
+  const form = new FormData();
+  form.append("bundle", new Blob([bundle], { type: "application/json" }), "auth.json");
+  const res = await fetch(`${BROKER}/v1/auth/bundle/post-run`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${await bearer()}` },
+    body: form,
+  });
+  if (!res.ok) throw new Error(`uploadPostRunBundle ${res.status}`);
+  return await res.json();
+}
+```
+
+Tests for this module use `vitest`'s `vi.stubGlobal("fetch", ...)` to fake responses; one happy-path + one 4xx-rejection per function.
+
+- [ ] **Step 5: Test the wiring with a fake pi binary that emits the expected last-line JSON**
+
+Spawn the agent entrypoint with `AUTH_BROKER_URL` pointed at a `httptest`-style local fake (Node's `http.createServer`) that:
+- Returns 200 + `{lease_id, expires_at}` on `/v1/leases/acquire`
+- Returns 200 + raw bundle bytes on `/v1/auth/bundle`
+- Records the `POST /v1/auth/bundle/post-run` upload and returns `{accepted:true}`
+- Returns 204 on `/v1/leases/release`
+
+Verify:
+- The fake-pi's stdout final line was parsed
+- `postflight` was called with the right args
+- The post-run endpoint received an upload (assert form field `bundle` non-empty)
+
+- [ ] **Step 6: Commit**
 
 ### Task C11: agents/code-pr.ts postflight
 
