@@ -28,14 +28,11 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
-# Install fabric-ai binary
-RUN curl -fsSL https://github.com/danielmiessler/fabric/releases/latest/download/fabric-linux-amd64 \
-    -o /usr/local/bin/fabric \
-    && chmod +x /usr/local/bin/fabric
-
-# Install pi-coding-agent globally so the `pi` CLI is on PATH for both
-# claude-sdk and pi engines. Pinned to 0.70.6 to match auth-broker (Spike A2).
-RUN npm install -g @mariozechner/pi-coding-agent@0.70.6
+# Note: previous revisions installed the danielmiessler/fabric CLI binary and
+# the pi-coding-agent npm package globally. The pi+fabric pivot removed both:
+# fabric patterns are markdown files now consumed via the pi SDK
+# (@mariozechner/pi-coding-agent in package.json), and pi itself is imported
+# in-process from runtime/src/agents/code-pr.ts — no external binary needed.
 
 WORKDIR /app
 

@@ -37,7 +37,9 @@ Replace the Claude Agent SDK path in the AIOS runtime with [pi](https://pi.dev) 
 
 ## Approach
 
-**Pi-as-CLI per Job (chosen).** Operator continues to spawn ephemeral K8s Jobs per `AgentTask`. Each Job container has pi installed and runs a thin agent entrypoint that performs preflight, launches pi, and performs postflight delivery. Pi runs in `--mode json` for machine-readable event streams, with explicit resource loading (`--no-extensions --no-skills --no-prompt-templates --no-context-files` plus per-agent `-e`, `--skill`, and `--system-prompt` inputs) so the Job is reproducible and does not accidentally inherit developer-local pi state.
+**Pi SDK embedded in the runtime per Job (chosen).** Operator continues to spawn ephemeral K8s Jobs per `AgentTask`. Each Job container is the shared `runtime` Node image; the agent entrypoint imports `@mariozechner/pi-coding-agent` directly and drives `createAgentSession` in-process. Per-agent SYSTEM.md, ToolPolicy, and skills are passed via the SDK's session config (no `--no-extensions/--no-skills/...` flags needed — the SDK doesn't auto-discover developer-local state). Extensions (sandbox, slack-thread, MCP, fabric-skill) are same-process Node modules registered against the session as `subscribe` / `beforeToolExecute` listeners.
+
+Switched from CLI `--mode json` to SDK after C3 build attempt — savings compound in C5-C8 (extensions become in-process listeners, not external `--extension <path>` files), the runtime image stays slim (no global `npm install -g pi-coding-agent`), tests mock the SDK directly rather than fake-pi shell scripts, and we get typed event streams instead of JSONL parsing. Per-Job isolation is still provided by the K8s pod boundary; we never needed the additional process boundary the CLI offered.
 
 **Auth is brokered, not assumed to be OpenAI-compatible.** The first implementation should use pi's native provider auth format where possible: a long-running `auth-broker` owns `PI_CODING_AGENT_DIR`/`auth.json`, refreshes credentials, and publishes a short-lived read-only auth bundle for Jobs. If Phase -1 proves that the selected pi subscription provider can be safely fronted as an OpenAI-compatible HTTP proxy, `auth-broker` may also expose that proxy; until then, do not design Jobs around `OPENAI_BASE_URL` alone.
 
@@ -46,7 +48,8 @@ Replace the Claude Agent SDK path in the AIOS runtime with [pi](https://pi.dev) 
 Alternatives rejected:
 
 - **Long-running agent pool with task queue** — sidesteps per-Job auth complexity, but loses per-task isolation and is a bigger pivot from the existing operator design.
-- **Pi SDK embedded in the current TS runtime** — good for future tighter integration, but the initial migration should avoid re-creating the existing 6-stage TS pipeline. Use the SDK later only for targeted wrappers/tests where CLI JSON mode is insufficient.
+- **Pi CLI `--mode json` per Job (originally chosen, superseded)** — initial design ran pi as a subprocess with JSONL streamed over stdout. Replaced by the SDK approach above before C5; the CLI added a process boundary the K8s pod was already providing, and made extensions / mock-testing significantly heavier.
+- **Pi RPC mode (`--mode rpc`)** — lets a long-lived pi subprocess accept `prompt`/`steer`/`followUp`/`cancel` over JSONL. Useful for mid-flight steering, multi-turn sessions, and operator-side interrupt — but the SDK gives most of the same in-process via `session.steer()` / cancellation without the long-running subprocess channel state machine. RPC stays available as a fallback if we ever want the agent in a different image from the runtime.
 - **OpenAI-compatible auth proxy as the default assumption** — attractive, but only valid if pi's subscription provider can use a stable public-compatible transport and this is acceptable operationally.
 
 ## Architecture
@@ -193,29 +196,40 @@ Pi 0.70.6's `/login` is interactive-only — there is no programmatic device-flo
 
 Each entrypoint is a thin shell. Pi handles the agent loop, built-in/custom tool dispatch, and context compaction.
 
-**Job invocation contract (sketch):**
+**Job invocation contract (sketch — SDK):**
 
-```bash
-export PI_CODING_AGENT_DIR=/var/run/aios/pi-agent   # brokered, per-job, read-only except sessions/tmp
-pi \
-  --mode json \
-  --no-session \
-  --no-context-files \
-  --no-extensions -e /app/pi-extensions/tool-policy/index.ts \
-  -e /app/pi-extensions/slack-thread/index.ts \
-  -e /app/pi-extensions/mcp-bridge/index.ts \
-  -e /app/pi-extensions/result-reporter/index.ts \
-  --no-skills --skill /fabric/extract-requirements/SKILL.md \
-  --system-prompt "$(cat /agent-config/SYSTEM.md)" \
-  --model "$AIOS_PI_MODEL" \
-  "$(cat /work/prompt.md)"
+```ts
+import { createAgentSession, SessionManager, AuthStorage, ModelRegistry } from "@mariozechner/pi-coding-agent";
+import { registerToolPolicy, registerSlackThread, registerMCPBridge, registerResultReporter } from "../pi-extensions";
+
+process.env.PI_CODING_AGENT_DIR = `/tmp/pi-state-${jobId}`;          // per-job; bundle copied from broker
+
+const authStorage = AuthStorage.create();                            // reads PI_CODING_AGENT_DIR/auth.json
+const modelRegistry = ModelRegistry.create(authStorage);
+const { session } = await createAgentSession({
+  sessionManager: SessionManager.inMemory(),
+  authStorage,
+  modelRegistry,
+  model: process.env.AIOS_PI_MODEL!,                                  // e.g. "openai-codex/gpt-5.4"
+  systemPrompt: await fs.readFile("/agent-config/SYSTEM.md", "utf8"),
+  skills: ["/fabric-patterns/extract-requirements/SKILL.md"],
+});
+
+registerToolPolicy(session, toolPolicy);
+registerSlackThread(session, { channel, threadTs });
+registerMCPBridge(session, mcpServers);
+const result = registerResultReporter(session);                       // returns a Promise<DeliverResult>
+
+await session.prompt(promptText);
+const delivered = await result;                                       // awaits the agent calling deliver_result
+session.dispose();
 ```
 
-The wrapper captures JSONL events, preserves the full log as a Job artifact, and reads the result from the `deliver_result` tool event rather than scraping final assistant text.
+Each agent entrypoint records the structured event stream as a Job artifact and reads the final result from the `deliver_result` tool event rather than scraping assistant text.
 
 ### Pi extensions (`runtime/pi-extensions/` — new)
 
-Pi extensions are TypeScript modules loaded explicitly with `-e` per Job. They can register tools, block/modify tool calls, observe provider responses, and stream events; they are not a security boundary by themselves.
+Pi extensions are TypeScript modules in `runtime/pi-extensions/`. With the SDK they are imported and called as `register*(session, opts)` functions that wire `session.subscribe` / `session.beforeToolExecute` / `session.registerTool` listeners. They can register tools, block/modify tool calls, observe provider responses, and stream events; they are not a security boundary by themselves.
 
 - **Tool-policy** — reads ToolPolicy, calls `pi.setActiveTools()`, and blocks risky `bash`/`write`/`edit` calls in `tool_call`. Pair with container hardening and Kubernetes `NetworkPolicy` for real isolation.
 - **Slack-thread** — listens to `message_update`, `tool_execution_*`, and terminal events; posts compact live updates into the task's Slack thread.
@@ -228,7 +242,7 @@ Pi extensions are TypeScript modules loaded explicitly with `-e` per Job. They c
 - Each pattern becomes a real Agent Skill directory with `SKILL.md` frontmatter (`name`, `description`) that satisfies pi/Agent Skills discovery rules. Do **not** invent `pi-skill.yaml` unless an extension consumes it; pi will not load it natively.
 - Keep long reference material beside the skill and link it from `SKILL.md` for progressive disclosure.
 - Per-agent system prompt is composed into a generated file or passed via `--system-prompt`: `agent-base.md` + agent-type-specific instructions. Example: research-agent system prompt = `research-base.md` + safety/output requirements; skills loaded explicitly = `extract-requirements`, `source-evaluation`, etc.
-- AgentConfig lists exact skills to load (`--skill fabric-patterns/extract-requirements/SKILL.md`) and whether they are merely available or required in the opening prompt.
+- AgentConfig lists exact skill paths (e.g. `fabric-patterns/extract-requirements/SKILL.md`) which the runtime passes to `createAgentSession({ skills: [...] })`.
 
 ### New MCP servers (`mcp-servers/`)
 
@@ -363,7 +377,7 @@ Grafana alert → webhook → AgentTask{type=ops, inputRef=alert://<id>}
 
 **Integration:**
 
-- Per-agent-type smoke test: run a real Job container with pi in `--mode json` against a mock provider or canned pi session, assert `deliver_result` and destination side effects.
+- Per-agent-type smoke test: run a real Job container, importing the pi SDK against a mock provider, assert `deliver_result` and destination side effects.
 - Auth-broker: real broker service with mock provider login/refresh endpoint, verify token persistence across pod restart (Secret/PVC + restart test), lease expiry, and Slack reauth callbacks.
 - Pi provider compatibility spike: run a disposable real login in a non-prod namespace, verify headless Job can use the brokered auth bundle and collect usage/errors without developer-local state.
 - TickTick MCP: integration test against a real TickTick sandbox account (premium-tier feature flag).
@@ -385,7 +399,7 @@ Nothing breaks during transition. Old and new run side-by-side gated by `AgentCo
 **Phase -1 — pi/provider/auth feasibility spike (1-2 days, required before buildout)**
 
 - Pin a pi version and record the exact provider/model target (`openai`/Codex subscription vs API-key-compatible fallback).
-- In a disposable namespace, run pi non-interactively with an isolated `PI_CODING_AGENT_DIR`, `--mode json`, explicit `--no-*` resource flags, and a minimal prompt.
+- In a disposable namespace, drive the pi SDK with an isolated `PI_CODING_AGENT_DIR` and a minimal prompt.
 - Prove that a Job can consume brokered credentials without interactive login and without mounting developer-local state.
 - Verify usage/error events are observable enough for operator status and Slack reporting.
 - Decide: native pi auth bundle (preferred), custom provider extension, or API-key fallback. Update this spec with the chosen transport before Phase 0.
@@ -457,7 +471,7 @@ Nothing breaks during transition. Old and new run side-by-side gated by `AgentCo
 - Pi version pin — latest stable at Phase -1 start; revisit before Phase 1.
 - Whether `AgentConfig` should be a ConfigMap or a new CRD — start with ConfigMap; promote to CRD only if dynamic config or status is needed.
 - Auth-broker on multi-replica vs single-pod — start single-pod (auth state is hard to share); promote to leader-elected if availability becomes an issue.
-- Pi RPC mode adoption. v1 uses `--mode json` (one-shot, matches ephemeral Job model). RPC mode (`pi --mode rpc --no-session`, JSONL over stdin/stdout, with `prompt`/`steer`/`followUp`/`cancel` and streamed `message_update`/`tool_execution_*` events) unlocks mid-flight steering, multi-turn sessions, and clean operator-side interrupt — worth revisiting once the JSON-mode baseline ships and we have evidence of where its limitations bite (e.g. wasted budget on runaway turns, awkward multi-turn content workflows, priority preemption needs).
+- Pi RPC / multi-turn pipeline patterns. v1 uses the SDK with one-shot `session.prompt()` per Job. The SDK already exposes `session.steer()`, `session.followUp()`, and abort semantics in-process, which covers most of the mid-flight steering case without an extra subprocess channel. If we ever need agent-in-a-different-image (e.g. for stricter sandboxing or polyglot agent runtimes), pi RPC mode (`--mode rpc`, JSONL over stdin/stdout, `prompt`/`steer`/`followUp`/`cancel`) is the documented escape hatch.
 
 ## Success criteria
 
