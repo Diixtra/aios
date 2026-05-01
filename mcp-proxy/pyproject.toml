@@ -2,7 +2,7 @@
 name = "mcp-sampling-proxy"
 version = "0.1.0"
 description = "MCP proxy that bridges sampling/createMessage to claude -p"
-requires-python = ">=3.11"
+requires-python = "==3.14.4"
 dependencies = [
     "mcp==1.27.0",
     "httpx==0.28.1",

@@ -2,7 +2,7 @@
 name = "aios-voice-gateway"
 version = "0.1.0"
 description = "Push-to-talk voice gateway for AIOS agents via LocalAI"
-requires-python = ">=3.11"
+requires-python = "==3.14.4"
 dependencies = [
     "fastapi==0.136.1",
     "uvicorn==0.46.0",
