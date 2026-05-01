@@ -13,7 +13,11 @@ class TestSlackVoiceIntegration:
     @pytest.mark.asyncio
     async def test_post_transcript_calls_slack_api(self) -> None:
         mock_client = AsyncMock()
-        with patch.object(SlackVoiceIntegration, "__init__", lambda self, token: setattr(self, "client", mock_client)):
+        with patch.object(
+            SlackVoiceIntegration,
+            "__init__",
+            lambda self, token: setattr(self, "client", mock_client),
+        ):
             integration = SlackVoiceIntegration(token="xoxb-test-token")
 
             await integration.post_transcript(
@@ -31,7 +35,11 @@ class TestSlackVoiceIntegration:
     @pytest.mark.asyncio
     async def test_post_transcript_formats_message(self) -> None:
         mock_client = AsyncMock()
-        with patch.object(SlackVoiceIntegration, "__init__", lambda self, token: setattr(self, "client", mock_client)):
+        with patch.object(
+            SlackVoiceIntegration,
+            "__init__",
+            lambda self, token: setattr(self, "client", mock_client),
+        ):
             integration = SlackVoiceIntegration(token="xoxb-test")
 
             await integration.post_transcript(

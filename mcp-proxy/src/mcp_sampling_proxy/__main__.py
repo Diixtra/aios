@@ -45,9 +45,7 @@ async def _run() -> None:
         await upstream.disconnect()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(
-            sig, lambda: asyncio.ensure_future(shutdown())
-        )
+        loop.add_signal_handler(sig, lambda: asyncio.ensure_future(shutdown()))
 
     try:
         await proxy_task

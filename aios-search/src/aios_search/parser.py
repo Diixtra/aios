@@ -1,6 +1,6 @@
 import hashlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import frontmatter
@@ -60,9 +60,7 @@ def _split_by_headings(body: str) -> list[str]:
     return [s.strip() for s in sections if s.strip()]
 
 
-def _split_by_word_window(
-    text: str, window: int = 200, overlap: int = 30
-) -> list[str]:
+def _split_by_word_window(text: str, window: int = 200, overlap: int = 30) -> list[str]:
     words = text.split()
     if len(words) <= window:
         return [text]

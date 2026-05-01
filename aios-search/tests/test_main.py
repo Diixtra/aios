@@ -43,7 +43,11 @@ def fake_indexer():
 
 
 class _FakeWatcher:
-    def __init__(self, reconcile_block_seconds: float = 0.0, reconcile_raises: Exception | None = None):
+    def __init__(
+        self,
+        reconcile_block_seconds: float = 0.0,
+        reconcile_raises: Exception | None = None,
+    ):
         self._reconcile_block_seconds = reconcile_block_seconds
         self._reconcile_raises = reconcile_raises
         self.started = False
@@ -82,7 +86,9 @@ def test_lifespan_does_not_block_on_slow_reconcile(app_factory, fake_indexer):
         elapsed = time.monotonic() - start
         # TestClient completes lifespan startup before returning from __enter__.
         # If reconcile were awaited synchronously, this would take ~5s.
-        assert elapsed < 2.0, f"Lifespan took {elapsed:.2f}s; reconcile is blocking startup"
+        assert elapsed < 2.0, (
+            f"Lifespan took {elapsed:.2f}s; reconcile is blocking startup"
+        )
         resp = client.get("/health")
         assert resp.status_code == 200
 

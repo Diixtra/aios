@@ -68,7 +68,9 @@ class UpstreamClient:
                         name=t.name,
                         description=t.description,
                         input_schema=t.inputSchema,
-                        output_schema=t.outputSchema if hasattr(t, "outputSchema") else None,
+                        output_schema=t.outputSchema
+                        if hasattr(t, "outputSchema")
+                        else None,
                     )
                 )
             cursor = result.nextCursor
@@ -84,7 +86,9 @@ class UpstreamClient:
         """Forward a tool call to the upstream server."""
         if not self._session:
             raise McpError(
-                mcp_types.ErrorData(code=mcp_types.INTERNAL_ERROR, message="Not connected to upstream")
+                mcp_types.ErrorData(
+                    code=mcp_types.INTERNAL_ERROR, message="Not connected to upstream"
+                )
             )
         _debug(self._config, f"calling upstream tool: {name}")
         return await self._session.call_tool(name, arguments)

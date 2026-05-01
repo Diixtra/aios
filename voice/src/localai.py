@@ -15,9 +15,7 @@ class LocalAIClient:
         self.whisper_model = config.whisper_model
         self.tts_model = config.tts_model
 
-    async def transcribe(
-        self, audio_bytes: bytes, model: str | None = None
-    ) -> str:
+    async def transcribe(self, audio_bytes: bytes, model: str | None = None) -> str:
         """Transcribe audio bytes to text via LocalAI Whisper endpoint.
 
         Args:
@@ -39,9 +37,7 @@ class LocalAIClient:
             data = response.json()
             return data.get("text", "")
 
-    async def synthesize(
-        self, text: str, model: str | None = None
-    ) -> bytes:
+    async def synthesize(self, text: str, model: str | None = None) -> bytes:
         """Synthesize text to audio via LocalAI Piper TTS endpoint.
 
         Args:

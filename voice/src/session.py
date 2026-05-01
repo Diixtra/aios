@@ -46,13 +46,9 @@ class SessionManager:
     def __init__(self) -> None:
         self._sessions: dict[str, VoiceSession] = {}
 
-    def create(
-        self, task_name: str, task_namespace: str = "default"
-    ) -> VoiceSession:
+    def create(self, task_name: str, task_namespace: str = "default") -> VoiceSession:
         """Create a new voice session for a task."""
-        session = VoiceSession(
-            task_name=task_name, task_namespace=task_namespace
-        )
+        session = VoiceSession(task_name=task_name, task_namespace=task_namespace)
         self._sessions[task_name] = session
         return session
 

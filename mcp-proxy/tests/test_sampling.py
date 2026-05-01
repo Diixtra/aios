@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from unittest import mock
 
@@ -18,24 +17,34 @@ from mcp_sampling_proxy.sampling import SamplingExecutor, _STOP_REASON_MAP
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_config(**overrides: object) -> Config:
     defaults = {"upstream_url": "http://upstream:8080", "claude_path": "claude"}
     return Config(**{**defaults, **overrides})
 
 
-def _stream_json_line(msg_type: str, content: list[dict], stop_reason: str = "end_turn", model: str = "claude-test") -> str:
-    return json.dumps({
-        "type": msg_type,
-        "message": {
-            "role": "assistant",
-            "content": content,
-            "stop_reason": stop_reason,
-            "model": model,
-        },
-    })
+def _stream_json_line(
+    msg_type: str,
+    content: list[dict],
+    stop_reason: str = "end_turn",
+    model: str = "claude-test",
+) -> str:
+    return json.dumps(
+        {
+            "type": msg_type,
+            "message": {
+                "role": "assistant",
+                "content": content,
+                "stop_reason": stop_reason,
+                "model": model,
+            },
+        }
+    )
 
 
-def _make_params(text: str = "hello", system: str | None = None) -> mcp_types.CreateMessageRequestParams:
+def _make_params(
+    text: str = "hello", system: str | None = None
+) -> mcp_types.CreateMessageRequestParams:
     return mcp_types.CreateMessageRequestParams(
         messages=[
             mcp_types.SamplingMessage(
@@ -62,6 +71,7 @@ def _mock_process(stdout: str, returncode: int = 0, stderr: str = "") -> mock.As
 # Tests: stop-reason mapping
 # ---------------------------------------------------------------------------
 
+
 class TestStopReasonMap:
     def test_all_known_mappings(self) -> None:
         assert _STOP_REASON_MAP["end_turn"] == "endTurn"
@@ -74,10 +84,13 @@ class TestStopReasonMap:
 # Tests: SamplingExecutor.execute
 # ---------------------------------------------------------------------------
 
+
 class TestSamplingExecutor:
     @pytest.mark.asyncio
     async def test_simple_text_response(self) -> None:
-        stdout = _stream_json_line("assistant", [{"type": "text", "text": "Hello world"}])
+        stdout = _stream_json_line(
+            "assistant", [{"type": "text", "text": "Hello world"}]
+        )
         proc = _mock_process(stdout)
 
         with mock.patch("asyncio.create_subprocess_exec", return_value=proc):
@@ -92,8 +105,12 @@ class TestSamplingExecutor:
     @pytest.mark.asyncio
     async def test_uses_last_assistant_message(self) -> None:
         """After Issue 11 fix: should use LAST assistant message, not first."""
-        first = _stream_json_line("assistant", [{"type": "text", "text": "first response"}])
-        second = _stream_json_line("assistant", [{"type": "text", "text": "final response"}])
+        first = _stream_json_line(
+            "assistant", [{"type": "text", "text": "first response"}]
+        )
+        second = _stream_json_line(
+            "assistant", [{"type": "text", "text": "final response"}]
+        )
         stdout = first + "\n" + second
         proc = _mock_process(stdout)
 
@@ -105,7 +122,12 @@ class TestSamplingExecutor:
 
     @pytest.mark.asyncio
     async def test_tool_use_response(self) -> None:
-        tool_block = {"type": "tool_use", "id": "t1", "name": "bash", "input": {"cmd": "ls"}}
+        tool_block = {
+            "type": "tool_use",
+            "id": "t1",
+            "name": "bash",
+            "input": {"cmd": "ls"},
+        }
         stdout = _stream_json_line("assistant", [tool_block], stop_reason="tool_use")
         proc = _mock_process(stdout)
 
@@ -141,7 +163,9 @@ class TestSamplingExecutor:
         stdout = _stream_json_line("assistant", [{"type": "text", "text": "ok"}])
         proc = _mock_process(stdout)
 
-        with mock.patch("asyncio.create_subprocess_exec", return_value=proc) as mock_exec:
+        with mock.patch(
+            "asyncio.create_subprocess_exec", return_value=proc
+        ) as mock_exec:
             executor = SamplingExecutor(_make_config())
             await executor.execute(_make_params("hi", system="Be helpful"))
 
@@ -162,10 +186,13 @@ class TestSamplingExecutor:
 
     @pytest.mark.asyncio
     async def test_multiple_text_blocks_joined(self) -> None:
-        stdout = _stream_json_line("assistant", [
-            {"type": "text", "text": "Hello"},
-            {"type": "text", "text": "World"},
-        ])
+        stdout = _stream_json_line(
+            "assistant",
+            [
+                {"type": "text", "text": "Hello"},
+                {"type": "text", "text": "World"},
+            ],
+        )
         proc = _mock_process(stdout)
 
         with mock.patch("asyncio.create_subprocess_exec", return_value=proc):
