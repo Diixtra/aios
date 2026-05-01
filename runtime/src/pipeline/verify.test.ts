@@ -32,6 +32,8 @@ const config: TaskConfig = {
   memoryUrl: "http://memory:8080",
   searchUrl: "http://search:8080",
   workspace: "/workspace",
+  model: "claude-sonnet-4-6",
+  maxTokens: 16384,
 };
 
 const toolPolicy: ToolPolicy = {
