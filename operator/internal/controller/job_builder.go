@@ -74,6 +74,19 @@ func (b *JobBuilder) BuildJob(
 	jobType string,
 	researchPVCName string,
 ) (*BuildResult, error) {
+	// C2: Validate engine-specific preconditions before doing any work.
+	// Spike A4: pi requires the qualified `provider/id` model form (e.g.
+	// "openai-codex/gpt-5.4"). Bare ids route to the wrong provider and
+	// surface as opaque 500s at runtime — fail fast at Job-build time.
+	if config.Spec.Runtime.Engine == "pi" {
+		if !strings.Contains(config.Spec.Runtime.Model, "/") {
+			return nil, fmt.Errorf(
+				"AgentConfig %q: runtime.model %q must be in 'provider/id' form (e.g. openai-codex/gpt-5.4) when engine=pi",
+				config.Name, config.Spec.Runtime.Model,
+			)
+		}
+	}
+
 	jobName := fmt.Sprintf("%s-%s", task.Name, jobType)
 
 	// C2: Serialize ToolPolicy to flat JSON matching runtime's expected shape
@@ -141,17 +154,6 @@ func (b *JobBuilder) BuildJob(
 		{Name: "AIOS_SLACK_CHANNEL", Value: config.Spec.Slack.Channel},
 		{Name: "CLAUDE_MODEL", Value: config.Spec.Runtime.Model},
 		{
-			Name: "ANTHROPIC_API_KEY",
-			ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: config.Spec.Auth.ClaudeKeySecret,
-					},
-					Key: "api-key",
-				},
-			},
-		},
-		{
 			Name: "GITHUB_TOKEN",
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
@@ -162,6 +164,30 @@ func (b *JobBuilder) BuildJob(
 				},
 			},
 		},
+	}
+
+	// C2: Engine-specific env vars.
+	// - claude-sdk (default, empty): inject ANTHROPIC_API_KEY from the secret.
+	// - pi: route auth via auth-broker; do NOT inject ANTHROPIC_API_KEY. Add
+	//   pi-specific vars (AUTH_BROKER_URL, PI_AGENT_TYPE, AIOS_PI_MODEL).
+	if config.Spec.Runtime.Engine == "pi" {
+		envVars = append(envVars,
+			corev1.EnvVar{Name: "AUTH_BROKER_URL", Value: "http://auth-broker.aios.svc:8080"},
+			corev1.EnvVar{Name: "PI_AGENT_TYPE", Value: task.Spec.AgentType},
+			corev1.EnvVar{Name: "AIOS_PI_MODEL", Value: config.Spec.Runtime.Model},
+		)
+	} else {
+		envVars = append(envVars, corev1.EnvVar{
+			Name: "ANTHROPIC_API_KEY",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: config.Spec.Auth.ClaudeKeySecret,
+					},
+					Key: "api-key",
+				},
+			},
+		})
 	}
 
 	// C3: Only inject AIOS_ISSUE_NUMBER when it is a real issue (> 0)
@@ -348,6 +374,32 @@ func (b *JobBuilder) BuildJob(
 		return nil, fmt.Errorf("unknown job type: %s", jobType)
 	}
 
+	// C2: Pi engine adds the fabric-patterns volume mount (read-only) so the
+	// agent can compose system prompts from shared pattern files at runtime.
+	// claude-sdk (default) does not need this mount.
+	var containerArgs []string
+	if config.Spec.Runtime.Engine == "pi" {
+		volumes = append(volumes, corev1.Volume{
+			Name: "fabric-patterns",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: "fabric-patterns",
+					},
+				},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "fabric-patterns",
+			MountPath: "/fabric-patterns",
+			ReadOnly:  true,
+		})
+
+		// Pi engine entrypoint: agents/code-pr.ts (resolved relative to the
+		// runtime image's WORKDIR via the existing CMD wrapper).
+		containerArgs = []string{"agents/code-pr.ts"}
+	}
+
 	// I2: Parse timeout and set ActiveDeadlineSeconds
 	var activeDeadlineSeconds *int64
 	if task.Spec.Timeout != "" {
@@ -381,6 +433,7 @@ func (b *JobBuilder) BuildJob(
 						{
 							Name:            "agent",
 							Image:           config.Spec.Runtime.Image,
+							Args:            containerArgs,
 							Env:             envVars,
 							VolumeMounts:    volumeMounts,
 							Resources:       config.Spec.Resources,

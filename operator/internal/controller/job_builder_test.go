@@ -583,3 +583,159 @@ func TestBuildJob_NoTimeout(t *testing.T) {
 	// No ActiveDeadlineSeconds when timeout is empty
 	assert.Nil(t, result.Job.Spec.ActiveDeadlineSeconds)
 }
+
+// TestBuildJob_PiEngine_UsesAgentEntrypoint verifies that when
+// AgentConfig.runtime.engine is "pi", the Job runs the agents/code-pr.ts
+// entrypoint, exposes the pi-required env vars (AUTH_BROKER_URL,
+// PI_AGENT_TYPE, AIOS_PI_MODEL), mounts the fabric-patterns volume, and does
+// NOT receive an ANTHROPIC_API_KEY env var (auth flows via the auth-broker
+// instead).
+//
+// Spike A4 finding: pi requires the qualified `provider/id` model form
+// (e.g. openai-codex/gpt-5.4). Bare model ids route to the wrong provider.
+// The operator must propagate AgentConfig.spec.runtime.model verbatim into
+// AIOS_PI_MODEL.
+func TestBuildJob_PiEngine_UsesAgentEntrypoint(t *testing.T) {
+	builder := &JobBuilder{Scheme: newTestScheme()}
+	task := newTestTask()
+	task.Spec.AgentType = "code-pr"
+	config := newTestConfig()
+	config.Spec.Runtime.Engine = "pi"
+	config.Spec.Runtime.Model = "openai-codex/gpt-5.4"
+	policy := newTestPolicy()
+
+	result, err := builder.BuildJob(task, config, policy, "coding", "")
+	require.NoError(t, err)
+	require.NotNil(t, result.Job)
+
+	container := result.Job.Spec.Template.Spec.Containers[0]
+
+	// Entrypoint: pi engine must invoke agents/code-pr.ts via Args.
+	require.NotEmpty(t, container.Args, "pi engine job must set container Args")
+	assert.Equal(t, "agents/code-pr.ts", container.Args[len(container.Args)-1],
+		"last Args element should be agents/code-pr.ts entrypoint")
+
+	// Env vars: build a name->value map (skipping ValueFrom-only entries).
+	envByName := map[string]string{}
+	envHasName := map[string]bool{}
+	for _, e := range container.Env {
+		envHasName[e.Name] = true
+		envByName[e.Name] = e.Value
+	}
+
+	// pi engine flows auth via auth-broker, not a static API key.
+	assert.False(t, envHasName["ANTHROPIC_API_KEY"],
+		"pi engine job must NOT have ANTHROPIC_API_KEY (auth-broker flow)")
+
+	// Required pi env vars.
+	assert.Equal(t, "http://auth-broker.aios.svc:8080", envByName["AUTH_BROKER_URL"])
+	assert.Equal(t, "code-pr", envByName["PI_AGENT_TYPE"])
+	assert.Equal(t, "openai-codex/gpt-5.4", envByName["AIOS_PI_MODEL"],
+		"AIOS_PI_MODEL must propagate AgentConfig.spec.runtime.model verbatim (Spike A4)")
+
+	// fabric-patterns volume + mount.
+	var fabricVolume bool
+	for _, v := range result.Job.Spec.Template.Spec.Volumes {
+		if v.Name == "fabric-patterns" {
+			fabricVolume = true
+		}
+	}
+	assert.True(t, fabricVolume, "pi engine job must declare a fabric-patterns volume")
+
+	var fabricMount *string
+	for _, m := range container.VolumeMounts {
+		if m.Name == "fabric-patterns" {
+			mp := m.MountPath
+			fabricMount = &mp
+			assert.True(t, m.ReadOnly, "fabric-patterns mount must be read-only")
+		}
+	}
+	require.NotNil(t, fabricMount, "pi engine job must mount fabric-patterns into the container")
+	assert.Equal(t, "/fabric-patterns", *fabricMount)
+}
+
+// TestBuildJob_PiEngine_RejectsBareModel verifies that the operator rejects
+// AgentConfigs whose engine is "pi" but whose model is not in the qualified
+// "provider/id" form. Spike A4: bare ids like "gpt-5.4" route to
+// azure-openai-responses and fail at runtime with an opaque 500. We surface
+// the error at Job-build time instead.
+func TestBuildJob_PiEngine_RejectsBareModel(t *testing.T) {
+	builder := &JobBuilder{Scheme: newTestScheme()}
+	task := newTestTask()
+	task.Spec.AgentType = "code-pr"
+	config := newTestConfig()
+	config.Spec.Runtime.Engine = "pi"
+	config.Spec.Runtime.Model = "gpt-5.4" // bare, no provider/ prefix
+	policy := newTestPolicy()
+
+	_, err := builder.BuildJob(task, config, policy, "coding", "")
+	require.Error(t, err, "expected validation error for bare model id")
+	assert.Contains(t, err.Error(), "provider/id",
+		"error message should explain the required form")
+}
+
+// TestBuildJob_ClaudeSDKEngine_PreservesExistingBehaviour verifies that the
+// claude-sdk engine (which is the kubebuilder default and matches every
+// pre-engine-field AgentConfig) keeps the existing entrypoint and env vars.
+// This pins the regression: adding the engine field MUST be a no-op for any
+// existing AgentConfig.
+func TestBuildJob_ClaudeSDKEngine_PreservesExistingBehaviour(t *testing.T) {
+	builder := &JobBuilder{Scheme: newTestScheme()}
+	task := newTestTask()
+	config := newTestConfig()
+	config.Spec.Runtime.Engine = "claude-sdk"
+	policy := newTestPolicy()
+
+	result, err := builder.BuildJob(task, config, policy, "coding", "")
+	require.NoError(t, err)
+
+	container := result.Job.Spec.Template.Spec.Containers[0]
+
+	// claude-sdk engine: no Args (existing behaviour — entrypoint is the image's CMD).
+	assert.Empty(t, container.Args, "claude-sdk engine should not set container Args")
+
+	// claude-sdk engine: ANTHROPIC_API_KEY is present.
+	envHasName := map[string]bool{}
+	for _, e := range container.Env {
+		envHasName[e.Name] = true
+	}
+	assert.True(t, envHasName["ANTHROPIC_API_KEY"],
+		"claude-sdk engine must inject ANTHROPIC_API_KEY")
+
+	// No pi-specific env vars.
+	assert.False(t, envHasName["AUTH_BROKER_URL"])
+	assert.False(t, envHasName["PI_AGENT_TYPE"])
+	assert.False(t, envHasName["AIOS_PI_MODEL"])
+
+	// No fabric-patterns volume.
+	for _, v := range result.Job.Spec.Template.Spec.Volumes {
+		assert.NotEqual(t, "fabric-patterns", v.Name,
+			"claude-sdk engine should not declare a fabric-patterns volume")
+	}
+}
+
+// TestBuildJob_EmptyEngine_BehavesAsClaudeSDK verifies that an unset Engine
+// field (Go zero value) is treated identically to "claude-sdk". This
+// guarantees every existing in-cluster AgentConfig keeps working unchanged
+// after the engine field rolls out, regardless of whether the kubebuilder
+// default has been re-applied to the stored object yet.
+func TestBuildJob_EmptyEngine_BehavesAsClaudeSDK(t *testing.T) {
+	builder := &JobBuilder{Scheme: newTestScheme()}
+	task := newTestTask()
+	config := newTestConfig()
+	config.Spec.Runtime.Engine = "" // explicit zero value
+	policy := newTestPolicy()
+
+	result, err := builder.BuildJob(task, config, policy, "coding", "")
+	require.NoError(t, err)
+
+	container := result.Job.Spec.Template.Spec.Containers[0]
+	assert.Empty(t, container.Args)
+
+	envHasName := map[string]bool{}
+	for _, e := range container.Env {
+		envHasName[e.Name] = true
+	}
+	assert.True(t, envHasName["ANTHROPIC_API_KEY"])
+	assert.False(t, envHasName["AUTH_BROKER_URL"])
+}
