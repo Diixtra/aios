@@ -13,6 +13,7 @@ import (
 	gh "github.com/Diixtra/aios/webhook/internal/github"
 	k8sclient "github.com/Diixtra/aios/webhook/internal/k8s"
 	"github.com/Diixtra/aios/webhook/internal/paperless"
+	"github.com/Diixtra/aios/webhook/internal/slack"
 )
 
 func main() {
@@ -105,6 +106,26 @@ func main() {
 		mux.Handle("/webhook/paperless", paperlessHandler)
 		log.Printf("Paperless webhook enabled at /webhook/paperless")
 	}
+	// /aios-reauth slash command — proxies to the auth-broker's /v1/admin/revalidate
+	// endpoint and returns the resulting state to Slack. Enabled when the broker URL
+	// + admin token are configured.
+	if brokerURL := os.Getenv("AUTH_BROKER_URL"); brokerURL != "" {
+		brokerToken := os.Getenv("AUTH_BROKER_ADMIN_TOKEN")
+		if brokerToken == "" {
+			log.Fatal("AUTH_BROKER_ADMIN_TOKEN required when AUTH_BROKER_URL is set")
+		}
+		signingSecret := os.Getenv("SLACK_SIGNING_SECRET")
+		if signingSecret == "" {
+			log.Fatal("SLACK_SIGNING_SECRET required when AUTH_BROKER_URL is set")
+		}
+		mux.Handle("POST /slack/reauth", slack.NewReauthHandler(
+			brokerURL+"/v1/admin/revalidate",
+			brokerToken,
+			signingSecret,
+		))
+		log.Printf("Slack /aios-reauth slash command enabled at /slack/reauth")
+	}
+
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "ok")
